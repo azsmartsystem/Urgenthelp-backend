@@ -40,13 +40,13 @@ class Settings(BaseSettings):
     OTP_EXPIRE_MINUTES: int = Field(default=10, ge=1)
 
     # ── CORS / Hosts ──────────────────────────────────────────────────────────
-    CORS_ORIGINS: list[AnyHttpUrl] = []
-    ALLOWED_HOSTS: list[str] = ["*"]
+    CORS_ORIGINS: list[str] | str = []
+    ALLOWED_HOSTS: list[str] | str = ["*"]
 
     # ── Paystack ──────────────────────────────────────────────────────────────
     PAYSTACK_SECRET_KEY: str
     PAYSTACK_PUBLIC_KEY: str
-    PAYSTACK_BASE_URL: AnyHttpUrl = AnyHttpUrl("https://api.paystack.co")  # type: ignore[assignment]
+    PAYSTACK_BASE_URL: AnyHttpUrl = AnyHttpUrl("https://api.paystack.co")
 
     # ── AWS S3 / Object Storage ───────────────────────────────────────────────
     AWS_ACCESS_KEY_ID: str

@@ -1,5 +1,6 @@
 """JWT auth utilities — token creation, decoding, and FastAPI dependencies."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID
@@ -54,7 +55,7 @@ def create_refresh_token(user_id: UUID, role: str, settings: Settings) -> str:
 def decode_token(token: str, secret: str) -> TokenPayload:
     try:
         raw = jwt.decode(token, secret, algorithms=["HS256"])
-        return TokenPayload(**raw)
+        return TokenPayload.model_validate(raw)
     except JWTError as exc:
         raise InvalidTokenError() from exc
 
@@ -81,7 +82,9 @@ def get_current_user(
     return payload
 
 
-def require_role(*roles: str):  # noqa: ANN201
+def require_role(
+    *roles: str,
+) -> Callable[[TokenPayload], TokenPayload]:
     """Dependency factory — restricts endpoint to specific roles."""
 
     def _dependency(

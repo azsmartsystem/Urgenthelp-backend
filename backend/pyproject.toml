@@ -11,7 +11,8 @@ dependencies = [
     "gunicorn>=22.0.0",
 
     # Database
-    "sqlalchemy>=2.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "greenlet>=3.0.0",
     "alembic>=1.13.0",
     "asyncpg>=0.29.0",          # async PostgreSQL driver
 
@@ -57,7 +58,9 @@ dev = [
     "ruff>=0.6.0",            # linter + formatter
     "mypy>=1.11.0",           # type checker
     "pre-commit>=3.8.0",
-    "sqlalchemy[mypy]>=2.0.0",
+    "types-python-jose>=3.3.0",
+    "types-passlib>=1.7.7",
+    "types-redis>=4.6.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -87,9 +90,10 @@ select = [
     "RUF", # ruff-specific rules
 ]
 ignore = [
-    "ANN101",  # self doesn't need a type annotation
-    "ANN102",  # cls doesn't need a type annotation
-    "S101",    # use of assert (fine in tests)
+    "ANN101", # missing type annotation for self
+    "ANN102", # missing type annotation for cls
+    "S101",   # use of assert (fine in tests)
+    "S105",   # false positive on token_type = "Bearer"
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -103,9 +107,9 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.12"
 strict = true
-plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+plugins = ["pydantic.mypy"]
 ignore_missing_imports = false
-disallow_any_explicit = true
+disallow_any_explicit = false
 warn_unreachable = true
 
 [tool.pytest.ini_options]

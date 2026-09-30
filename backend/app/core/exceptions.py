@@ -112,7 +112,7 @@ class BookingStateError(ALLinHELPError):
 
     code: str = "BOOKING_INVALID_STATE_TRANSITION"
     detail: str = "This action cannot be performed in the booking's current state."
-    status_code: int = status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code: int = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 @dataclass

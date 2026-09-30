@@ -59,14 +59,22 @@ def create_application() -> FastAPI:
     # --- Middleware (order matters: outermost = last added) ---
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=(
+            settings.CORS_ORIGINS
+            if isinstance(settings.CORS_ORIGINS, list)
+            else [settings.CORS_ORIGINS]
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
     application.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=settings.ALLOWED_HOSTS,
+        allowed_hosts=(
+            settings.ALLOWED_HOSTS
+            if isinstance(settings.ALLOWED_HOSTS, list)
+            else [settings.ALLOWED_HOSTS]
+        ),
     )
 
     # --- Exception handlers ---
