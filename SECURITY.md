@@ -20,8 +20,6 @@ If you need to share sensitive details (PoC, exploit code), mention this in your
 In-scope:
 
 - Backend API code in `backend/` (HTTP endpoints, auth flows, business logic)
-- Frontend code in `frontend/` (client-side logic that affects user data or auth)
-- Smart-contract / on-chain programs in `okaform-program/` (program logic and account handling)
 - Infrastructure as code used by the project (if present)
 
 Out-of-scope:

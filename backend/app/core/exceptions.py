@@ -20,12 +20,13 @@ logger = structlog.get_logger(__name__)
 
 # ─── Base ─────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ALLinHELPError(Exception):
     """Base exception for all domain errors."""
 
-    code: str                                      # machine-readable
-    detail: str                                    # human-readable, safe for UI
+    code: str  # machine-readable
+    detail: str  # human-readable, safe for UI
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     context: dict[str, Any] = field(default_factory=dict)
 
@@ -34,6 +35,7 @@ class ALLinHELPError(Exception):
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class InvalidTokenError(ALLinHELPError):
@@ -65,6 +67,7 @@ class PhoneAlreadyRegisteredError(ALLinHELPError):
 
 # ─── Users / Helpers ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class UserNotFoundError(ALLinHELPError):
     code: str = "USER_NOT_FOUND"
@@ -95,6 +98,7 @@ class ForbiddenError(ALLinHELPError):
 
 # ─── Bookings ─────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class BookingNotFoundError(ALLinHELPError):
     code: str = "BOOKING_NOT_FOUND"
@@ -105,6 +109,7 @@ class BookingNotFoundError(ALLinHELPError):
 @dataclass
 class BookingStateError(ALLinHELPError):
     """Raised when a state transition is invalid (e.g. completing a cancelled booking)."""
+
     code: str = "BOOKING_INVALID_STATE_TRANSITION"
     detail: str = "This action cannot be performed in the booking's current state."
     status_code: int = status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -118,6 +123,7 @@ class NoAvailableHelpersError(ALLinHELPError):
 
 
 # ─── Payments ─────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class PaymentFailedError(ALLinHELPError):
@@ -135,6 +141,7 @@ class InsufficientWalletBalanceError(ALLinHELPError):
 
 # ─── Categories ───────────────────────────────────────────────────────────────
 
+
 @dataclass
 class CategoryNotFoundError(ALLinHELPError):
     code: str = "CATEGORY_NOT_FOUND"
@@ -144,9 +151,11 @@ class CategoryNotFoundError(ALLinHELPError):
 
 # ─── External Services ────────────────────────────────────────────────────────
 
+
 @dataclass
 class ExternalServiceError(ALLinHELPError):
     """Raised when a third-party API call fails."""
+
     code: str = "EXTERNAL_SERVICE_ERROR"
     detail: str = "An external service is temporarily unavailable."
     status_code: int = status.HTTP_502_BAD_GATEWAY
@@ -154,13 +163,12 @@ class ExternalServiceError(ALLinHELPError):
 
 # ─── Global Exception Handler Registration ────────────────────────────────────
 
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register all exception handlers on the FastAPI app."""
 
     @app.exception_handler(ALLinHELPError)
-    async def allinhelp_error_handler(
-        request: Request, exc: ALLinHELPError
-    ) -> JSONResponse:
+    async def allinhelp_error_handler(request: Request, exc: ALLinHELPError) -> JSONResponse:
         logger.warning(
             "domain_error",
             code=exc.code,
@@ -178,9 +186,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_error_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
+    async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.error(
             "unhandled_exception",
             error=str(exc),

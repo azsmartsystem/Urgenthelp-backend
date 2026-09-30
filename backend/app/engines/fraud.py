@@ -25,22 +25,23 @@ class FraudFlag:
 @dataclass
 class FraudContext:
     """Inputs required to evaluate fraud rules for a user/event."""
+
     account_age_hours: float
-    payment_failure_rate: float    # 0.0 – 1.0
-    cancellation_rate: float       # 0.0 – 1.0
-    booking_speed_seconds: float   # time between booking + review submission
-    gps_speed_kph: float           # detected speed during job (impossible if very high)
-    duplicate_phone_count: int     # accounts sharing this phone
+    payment_failure_rate: float  # 0.0 - 1.0
+    cancellation_rate: float  # 0.0 - 1.0
+    booking_speed_seconds: float  # time between booking + review submission
+    gps_speed_kph: float  # detected speed during job (impossible if very high)
+    duplicate_phone_count: int  # accounts sharing this phone
     open_disputes: int
 
 
 RULES: list[tuple[str, FraudAction, Literal["critical", "high", "medium", "low"]]] = [
-    ("multiple_accounts_same_phone",     "suspend",              "critical"),
-    ("payment_failure_rate_above_50pct", "flag_for_review",      "high"),
-    ("new_account_first_booking",        "require_manual_verify","medium"),
-    ("gps_speed_exceeds_200kph",         "flag_for_review",      "high"),
-    ("review_submitted_under_60s",       "discard",              "low"),
-    ("cancellation_rate_above_40pct",    "flag_for_review",      "medium"),
+    ("multiple_accounts_same_phone", "suspend", "critical"),
+    ("payment_failure_rate_above_50pct", "flag_for_review", "high"),
+    ("new_account_first_booking", "require_manual_verify", "medium"),
+    ("gps_speed_exceeds_200kph", "flag_for_review", "high"),
+    ("review_submitted_under_60s", "discard", "low"),
+    ("cancellation_rate_above_40pct", "flag_for_review", "medium"),
 ]
 
 

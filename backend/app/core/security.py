@@ -5,13 +5,12 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import structlog
+from app.core.config import Settings, get_settings
+from app.core.exceptions import ForbiddenError, InvalidTokenError
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
-
-from app.core.config import Settings, get_settings
-from app.core.exceptions import ForbiddenError, InvalidTokenError
 
 logger = structlog.get_logger(__name__)
 
@@ -21,7 +20,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 class TokenPayload(BaseModel):
     """Strict shape of the JWT payload."""
 
-    sub: str          # user UUID as string
+    sub: str  # user UUID as string
     role: Literal["customer", "helper", "admin"]
     type: Literal["access", "refresh"]
     iat: datetime
@@ -61,6 +60,7 @@ def decode_token(token: str, secret: str) -> TokenPayload:
 
 
 # ─── FastAPI Dependencies ──────────────────────────────────────────────────────
+
 
 def _extract_token(
     credentials: HTTPAuthorizationCredentials | None,

@@ -4,22 +4,14 @@ No HTTP awareness here. Receives typed inputs, returns typed outputs,
 raises typed exceptions.
 """
 
-import secrets
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.config import get_settings
-from app.core.exceptions import (
-    InvalidCredentialsError,
-    OTPExpiredError,
-    PhoneAlreadyRegisteredError,
-)
-from app.core.security import create_access_token, create_refresh_token
 from app.modules.auth.schemas import (
     OTPVerifyRequest,
     RegisterRequest,
     TokenResponse,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()

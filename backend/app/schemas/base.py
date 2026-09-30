@@ -13,7 +13,7 @@ class AppBaseModel(BaseModel):
     """Base model for all Pydantic schemas in this project.
 
     - model_config ensures ORM models can be serialised directly (from_attributes)
-    - strict=True means no silent type coercion (int "1" ≠ str "1")
+    - strict=True means no silent type coercion (int "1" != str "1")
     """
 
     model_config = ConfigDict(

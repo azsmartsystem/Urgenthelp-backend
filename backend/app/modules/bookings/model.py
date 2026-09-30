@@ -1,17 +1,16 @@
 """Booking ORM model and state machine."""
 
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
+from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from sqlalchemy import Enum, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-
 if TYPE_CHECKING:
-    from app.modules.users.model import User
     from app.modules.categories.model import ServiceCategory
+    from app.modules.users.model import User
 
 
 class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -57,15 +56,15 @@ class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     category: Mapped["ServiceCategory"] = relationship("ServiceCategory")
 
     # Valid state transitions — enforced by BookingService, not the DB
-    VALID_TRANSITIONS: dict[str, list[str]] = {
-        "requested":   ["matched", "cancelled"],
-        "matched":     ["accepted", "cancelled"],
-        "accepted":    ["en_route", "cancelled"],
-        "en_route":    ["in_progress"],
+    VALID_TRANSITIONS: ClassVar[dict[str, list[str]]] = {
+        "requested": ["matched", "cancelled"],
+        "matched": ["accepted", "cancelled"],
+        "accepted": ["en_route", "cancelled"],
+        "en_route": ["in_progress"],
         "in_progress": ["completed", "disputed"],
-        "completed":   [],
-        "cancelled":   [],
-        "disputed":    ["completed", "cancelled"],
+        "completed": [],
+        "cancelled": [],
+        "disputed": ["completed", "cancelled"],
     }
 
     def can_transition_to(self, new_status: str) -> bool:

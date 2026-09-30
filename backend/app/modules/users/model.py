@@ -1,13 +1,10 @@
 """User ORM model."""
 
-import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, String
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from sqlalchemy import Boolean, Enum, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.modules.bookings.model import Booking

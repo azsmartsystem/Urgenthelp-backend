@@ -1,0 +1,109 @@
+# ============================================================
+#  ALLinHELP — Root .gitignore
+# ============================================================
+
+# ── macOS ────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── IDEs & Editors ───────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+.cursor/
+
+# ── Old / replaced tooling (migrated from previous project) ──
+.husky/_/
+commitlint.config.js
+
+# ── PDFs / Docs (keep out of git) ────────────────────────────
+*.pdf
+
+
+# ── Zephyr tracker (old project reference only) ──────────────
+zephyr_tracker.md
+
+# ============================================================
+#  backend/  — Python / FastAPI
+# ============================================================
+
+# uv / virtual environment
+backend/.venv/
+backend/venv/
+backend/env/
+
+# Python artefacts
+backend/**/__pycache__/
+backend/**/*.py[cod]
+backend/**/*.pyo
+backend/**/*.pyd
+backend/.Python
+
+# Environment & secrets — NEVER commit these
+backend/.env
+backend/.env.local
+backend/.env.*.local
+backend/**/*.env
+backend/firebase-service-account.json
+backend/**/*.pem
+backend/**/*.key
+
+# Distribution / build
+backend/dist/
+backend/build/
+backend/**/*.egg-info/
+backend/**/*.egg
+
+# Testing / coverage
+backend/.coverage
+backend/coverage.xml
+backend/htmlcov/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+
+# Alembic auto-generate cache
+backend/alembic/versions/__pycache__/
+
+# Logs
+backend/**/*.log
+
+# ============================================================
+#  frontend/  — (React / Next.js / Vite — populated later)
+# ============================================================
+
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/build/
+
+# ============================================================
+#  Infrastructure / DevOps
+# ============================================================
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/*.tfvars
+!*.tfvars.example
+
+# CI/CD secrets
+.github/secrets/
+
+# Others
+DISCOVERY_NOTES.md

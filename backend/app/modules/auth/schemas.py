@@ -3,9 +3,8 @@
 import re
 from typing import Literal
 
-from pydantic import Field, field_validator
-
 from app.schemas.base import AppBaseModel
+from pydantic import Field, field_validator
 
 
 class RegisterRequest(AppBaseModel):

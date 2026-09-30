@@ -3,27 +3,24 @@
 from collections.abc import AsyncGenerator
 
 import structlog
+from app.core.config import get_settings
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 
-from app.core.config import get_settings
-
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 # Convert postgresql:// → postgresql+asyncpg:// for async driver
-_db_url = str(settings.DATABASE_URL).replace(
-    "postgresql://", "postgresql+asyncpg://", 1
-)
+_db_url = str(settings.DATABASE_URL).replace("postgresql://", "postgresql+asyncpg://", 1)
 
 engine = create_async_engine(
     _db_url,
     pool_size=settings.DATABASE_POOL_SIZE,
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
-    pool_pre_ping=True,   # detect stale connections
+    pool_pre_ping=True,  # detect stale connections
     echo=settings.DEBUG,  # log SQL in dev only
 )
 

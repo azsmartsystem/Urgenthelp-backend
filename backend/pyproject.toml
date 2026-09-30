@@ -87,8 +87,8 @@ select = [
     "RUF", # ruff-specific rules
 ]
 ignore = [
-    "ANN101",  # missing type annotation for `self`
-    "ANN102",  # missing type annotation for `cls`
+    "ANN101",  # self doesn't need a type annotation
+    "ANN102",  # cls doesn't need a type annotation
     "S101",    # use of assert (fine in tests)
 ]
 
