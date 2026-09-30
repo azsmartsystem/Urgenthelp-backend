@@ -1,0 +1,53 @@
+# ALLinHELP Backend
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# uv / virtual env
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Secrets
+firebase-service-account.json
+*.pem
+*.key
+
+# Distribution
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Testing / coverage
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic — keep migrations, ignore env-specific files
+alembic/versions/__pycache__/
+
+# Logs
+*.log
