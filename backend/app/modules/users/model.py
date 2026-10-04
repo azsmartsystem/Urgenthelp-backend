@@ -1,9 +1,10 @@
 """User ORM model."""
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-from sqlalchemy import Boolean, Enum, String
+from sqlalchemy import Boolean, DateTime, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
@@ -16,6 +17,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "users"
 
     phone: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
+    # Email is NOT a login identifier. It is a verified recovery/notification channel.
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
+    # Only a verified email may receive password reset links.
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     full_name: Mapped[str] = mapped_column(String(100), nullable=False)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(

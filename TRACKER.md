@@ -80,6 +80,38 @@
   - [ ] Write tests
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
+- [x] **Email Channel — Schema** *(Done — Oct 4)*
+  - [x] `users.email` (nullable, unique, not a login identifier)
+  - [x] `users.email_verified_at` (only verified emails may receive reset links)
+  - [x] `notification_preferences` table (user, channel, event type, enabled)
+  - [x] Email settings in `Settings` and `.env.example`
+  - **Est. Time:** 2h | **Blocker?** ❌ None
+
+- [ ] **Email Channel — Verification** `POST /api/v1/users/me/email` + `/email/verify`
+  - [ ] Accept optional email at registration (`EmailStr`)
+  - [ ] Send single-use verification link (hashed token in Redis, 24h TTL)
+  - [ ] Set `email_verified_at` on success; reset it if the email changes
+  - [ ] Integrate email provider (Resend / SendGrid / SES); log-only in dev
+  - [ ] Write tests
+  - **Est. Time:** 5h | **Blocker?** ⚠️ Email provider account + sender domain
+
+- [ ] **Account Recovery (tiered)** `POST /api/v1/auth/password/forgot` + `/reset`
+  - [ ] Verified email on file: send reset link (default)
+  - [ ] No verified email: SMS OTP to registered phone (fallback)
+  - [ ] Neither available: manual admin recovery via ID verification
+  - [ ] Identical response whether or not the account exists (no enumeration)
+  - [ ] Single-use random token, hash stored in Redis, 30 min TTL (not a JWT)
+  - [ ] Revoke all refresh tokens after a successful reset
+  - [ ] Rate limit per phone, email and IP
+  - [ ] Write tests
+  - **Est. Time:** 6h | **Blocker?** ⚠️ Depends on OTP + email verification tasks
+
+- [ ] **Notification Preferences** `GET/PUT /api/v1/notifications/preferences`
+  - [ ] List and update per-channel, per-event opt-ins
+  - [ ] Transactional events (reset, security, receipts) are never opt-out
+  - [ ] Write tests
+  - **Est. Time:** 3h | **Blocker?** ❌ None
+
 **Week 1 Goals:**
 
 - [ ] User can register with phone + password

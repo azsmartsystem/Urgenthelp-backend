@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # ── Google Maps ───────────────────────────────────────────────────────────
     GOOGLE_MAPS_API_KEY: str
 
+    # ── Email (transactional: password reset, verification, receipts) ─────────
+    EMAIL_PROVIDER_API_KEY: str | None = None  # Resend / SendGrid / SES key
+    EMAIL_FROM_ADDRESS: str = "no-reply@allinhelp.com"
+    EMAIL_VERIFICATION_EXPIRE_HOURS: int = Field(default=24, ge=1)
+    PASSWORD_RESET_EXPIRE_MINUTES: int = Field(default=30, ge=5, le=120)
+
     # ── Sentry ────────────────────────────────────────────────────────────────
     SENTRY_DSN: str | None = None
 

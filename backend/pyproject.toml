@@ -94,6 +94,7 @@ ignore = [
     "ANN102", # missing type annotation for cls
     "S101",   # use of assert (fine in tests)
     "S105",   # false positive on token_type = "Bearer"
+    "UP046",  # mypy does not support PEP 695 type parameter syntax yet
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -6,7 +6,7 @@
 repos:
   # ── Ruff: linting + formatting (replaces flake8 + isort + black) ───────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
+    rev: v0.16.9
     hooks:
       - id: ruff
         args: ["--fix"]           # auto-fix safe issues
@@ -17,7 +17,7 @@ repos:
     rev: v1.11.2
     hooks:
       - id: mypy
-        exclude: ^alembic/
+        exclude: alembic/
         additional_dependencies:
           - pydantic
           - sqlalchemy[mypy]

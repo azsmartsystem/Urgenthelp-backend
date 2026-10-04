@@ -4,6 +4,7 @@ import asyncio
 from logging.config import fileConfig
 
 # Import models for migrations
+import app.modules.notifications.model
 import app.modules.users.model  # noqa: F401
 from alembic import context
 from app.core.config import get_settings
