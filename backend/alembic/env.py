@@ -3,15 +3,12 @@
 import asyncio
 from logging.config import fileConfig
 
+# Import models for migrations
+import app.modules.users.model  # noqa: F401
 from alembic import context
-from sqlalchemy.ext.asyncio import create_async_engine
-
 from app.core.config import get_settings
 from app.db.base import Base
-
-# Import all models so Alembic can detect them for autogenerate
-import app.modules.users.model  # noqa: F401
-import app.modules.bookings.model  # noqa: F401
+from sqlalchemy.ext.asyncio import create_async_engine
 
 config = context.config
 settings = get_settings()
@@ -21,9 +18,7 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-_db_url = str(settings.DATABASE_URL).replace(
-    "postgresql://", "postgresql+asyncpg://", 1
-)
+_db_url = str(settings.DATABASE_URL).replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
 def run_migrations_offline() -> None:

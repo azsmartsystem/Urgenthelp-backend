@@ -1,6 +1,6 @@
 # 🚀 ALLINHELP BACKEND — PROJECT TRACKER
 
-**Developer:** Backend Dev
+**Developer:** Backend Dev, Patrick Okafor
 **Client:** ALLinHELP
 **Contract Start:** October 1, 2026
 **Contract End:** December 31, 2026 (13 weeks)
@@ -8,38 +8,29 @@
 
 ---
 
-## 💰 PAYMENT TRACKER
+## MILESTONE OVERVIEW
 
-| Milestone | Amount | Status | Due Date | Paid Date |
-|-----------|--------|--------|----------|-----------|
-| Upfront (40%) | TBD | ⏳ PENDING | Oct 1, 2026 | — |
-| Milestone 2 (30%) | TBD | ⏳ PENDING | Nov 12, 2026 | — |
-| Final (30%) | TBD | ⏳ PENDING | Dec 31, 2026 | — |
-| **TOTAL PAID** | **TBD** | — | — | — |
-| **REMAINING** | **TBD** | — | — | — |
+### M1: Foundation & Core API
 
----
-
-## 📅 MILESTONE OVERVIEW
-
-### 🟢 M1: Foundation & Core API
 **Status:** 🔄 IN PROGRESS
 **Deadline:** November 1, 2026 (4 weeks)
 **Deliverable:** Admin can log in, see registered users, manage categories. Auth fully working.
 
-### 🔵 M2: Core Booking Flow + Payments
+### M2: Core Booking Flow + Payments
+
 **Status:** ⏳ NOT STARTED
 **Deadline:** December 1, 2026 (4 weeks)
 **Deliverable:** Customer can create booking, match with helper, chat, and pay end-to-end.
 
-### 🟣 M3: Polish, Identity Verification & Deployment
+### M3: Polish, Identity Verification & Deployment
+
 **Status:** ⏳ NOT STARTED
 **Deadline:** December 31, 2026 (4 weeks)
 **Deliverable:** UAT-ready platform deployed to production with monitoring.
 
 ---
 
-## 📋 MONTH 1: FOUNDATION (Oct 1 – Nov 1)
+## MONTH 1: FOUNDATION (Oct 1 – Nov 1)
 
 > **Goal:** Client can log in to admin panel, see registered users, and manage service categories. All auth flows working.
 
@@ -49,7 +40,7 @@
 
 **Focus:** Project bootstrap + Registration + OTP Login
 
-#### 🎯 Tasks
+#### 🎯 Tasks 001
 
 - [x] **Project Bootstrap** *(Done — Sep 30)*
   - [x] uv + FastAPI project scaffold
@@ -61,11 +52,11 @@
   - [x] Git repo initialised + remote added
   - **Est. Time:** 4h | **Blocker?** ❌ None
 
-- [ ] **Database Setup**
-  - [ ] PostgreSQL running locally (Docker or native)
-  - [ ] Alembic initialised (`uv run alembic init alembic`)
-  - [ ] First migration: `users` table
-  - [ ] `uv run alembic upgrade head` — confirm table created
+- [x] **Database Setup** *(Done — Oct 4)*
+  - [x] PostgreSQL running locally (Docker or native)
+  - [x] Alembic initialised (`alembic.ini`, `script.py.mako`, `env.py`)
+  - [x] First migration: `users` table
+  - [x] `uv run alembic upgrade head` — confirm table created
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 - [ ] **Auth — Registration Endpoint** `POST /api/v1/auth/register`
@@ -90,6 +81,7 @@
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
 **Week 1 Goals:**
+
 - [ ] User can register with phone + password
 - [ ] User can request and verify OTP
 - [ ] JWT pair returned correctly
@@ -101,7 +93,7 @@
 
 **Focus:** Profile management (single model, role-based views)
 
-#### 🎯 Tasks
+#### 🎯 Tasks 002
 
 - [ ] **Migration: `helper_profiles` extension fields**
   - [ ] Skills (array), service radius, availability schedule, bio, certifications
@@ -136,6 +128,7 @@
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 **Week 2 Goals:**
+
 - [ ] Customer and Helper can update their profiles
 - [ ] Helper can set skills, radius, and availability
 - [ ] Categories API returns the 18 PRD categories
@@ -147,7 +140,7 @@
 
 **Focus:** Create a booking, match a helper, state machine
 
-#### 🎯 Tasks
+#### 🎯 Tasks 003
 
 - [ ] **Migration: `bookings` table**
   - [ ] All fields: status, location, notes, prices, customer_id, helper_id, category_id
@@ -183,6 +176,7 @@
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
 **Week 3 Goals:**
+
 - [ ] Full booking lifecycle working end-to-end (create → match → accept → complete)
 - [ ] State machine enforced — invalid transitions return typed errors
 - [ ] AI Matching engine integrated and returning ranked helpers
@@ -228,13 +222,14 @@
   - **Est. Time:** 4h | **Blocker?** ❌ None
 
 **Week 4 Goals:**
+
 - [ ] Admin can see all users, approve ID verifications, manage categories
 - [ ] M1 demo video recorded
 - [ ] Test coverage ≥80%, mypy clean
 
 ---
 
-## 📋 MONTH 2: CORE FEATURES (Nov 3 – Dec 1)
+## MONTH 2: CORE FEATURES (Nov 3 – Dec 1)
 
 > **Goal:** End-to-end booking flow working. Customer books → matches helper → chats → pays. Wallet functional.
 
@@ -244,7 +239,7 @@
 
 **Focus:** Paystack integration, wallet balance, booking payment
 
-#### 🎯 Tasks
+#### 🎯 Tasks 004
 
 - [ ] **Migration: `wallets` + `transactions` tables**
   - [ ] Wallet: user_id, balance, currency
@@ -279,6 +274,7 @@
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 **Week 5 Goals:**
+
 - [ ] Can top up wallet via Paystack
 - [ ] Booking payment deducted from wallet on completion
 - [ ] Commission split working correctly
@@ -289,7 +285,7 @@
 
 **Focus:** In-app chat via WebSockets
 
-#### 🎯 Tasks
+#### Tasks 005
 
 - [ ] **Migration: `conversations` + `messages` tables**
   - [ ] Conversation linked to booking_id (1-to-1 per booking)
@@ -315,6 +311,7 @@
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
 **Week 6 Goals:**
+
 - [ ] Two users can exchange messages in real-time via WebSocket
 - [ ] Message history persisted and retrievable
 - [ ] Works with the `/docs` Swagger WS test
@@ -325,7 +322,7 @@
 
 **Focus:** Firebase push notifications + post-booking ratings
 
-#### 🎯 Tasks
+#### 🎯 Tasks 006
 
 - [ ] **Firebase FCM Setup**
   - [ ] `NotificationService.send_push()` — wrap FCM Admin SDK
@@ -347,6 +344,7 @@
   - **Est. Time:** 4h | **Blocker?** ❌ None
 
 **Week 7 Goals:**
+
 - [ ] Push notification arrives on helper's device when job matched
 - [ ] Customer can rate and review after job completion
 - [ ] Trust score updates automatically post-review
@@ -357,7 +355,7 @@
 
 **Focus:** Wire everything together, polish, test
 
-#### 🎯 Tasks
+#### 🎯 Tasks 007
 
 - [ ] **End-to-End Flow Test**
   - [ ] Register customer + helper
@@ -384,12 +382,13 @@
   - **Est. Time:** 4h | **Blocker?** ❌ None
 
 **Week 8 Goals:**
+
 - [ ] Complete booking lifecycle working end-to-end, tested
 - [ ] Demo video recorded for M2 submission
 
 ---
 
-## 📋 MONTH 3: POLISH & LAUNCH (Dec 3 – Dec 31)
+## MONTH 3: POLISH & LAUNCH (Dec 3 – Dec 31)
 
 > **Goal:** UAT-ready, deployed, monitored, documented. Client can run independently.
 
@@ -399,7 +398,7 @@
 
 **Focus:** GPS status updates, helper-side endpoints
 
-#### 🎯 Tasks
+#### 🎯 Tasks 008
 
 - [ ] **Status-Based Location Tracking** *(MVP: no live GPS streaming)*
   - [ ] `POST /api/v1/bookings/{id}/location` — helper posts lat/lon at key status changes
@@ -420,6 +419,7 @@
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 **Week 9 Goals:**
+
 - [ ] Helper can update their GPS location at status changes
 - [ ] Helper earnings dashboard working
 - [ ] Dispute flow implemented
@@ -430,7 +430,7 @@
 
 **Focus:** Make it production-safe
 
-#### 🎯 Tasks
+#### 🎯 Tasks 010
 
 - [ ] **Rate Limiting**
   - [ ] OTP endpoints: 3 requests per phone per 10 minutes (Redis counter)
@@ -457,6 +457,7 @@
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
 **Week 10 Goals:**
+
 - [ ] OTP brute-force protected
 - [ ] Sentry capturing errors in staging
 - [ ] Security audit complete
@@ -467,7 +468,7 @@
 
 **Focus:** Get it running on a real server
 
-#### 🎯 Tasks
+#### 🎯 Tasks 011
 
 - [ ] **Choose & Configure Cloud Provider**
   - [ ] Recommended: Railway (fast) or AWS EC2 (more control)
@@ -494,6 +495,7 @@
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 **Week 11 Goals:**
+
 - [ ] App running on staging URL
 - [ ] Client can access staging `/docs` for manual testing
 - [ ] CI/CD running on GitHub
@@ -504,7 +506,7 @@
 
 **Focus:** Fix everything, hand over cleanly
 
-#### 🎯 Tasks
+#### 🎯 Tasks 012
 
 - [ ] **User Acceptance Testing (UAT)**
   - [ ] Share staging URL with client + frontend team
@@ -534,16 +536,17 @@
   - **Est. Time:** 5h | **Blocker?** ❌ None
 
 **Week 12–13 Goals:**
+
 - [ ] Production live and stable
 - [ ] Client can operate and extend the platform independently
 - [ ] Final invoice submitted
 
 ---
 
-## 📊 SPRINT VELOCITY TRACKER
+## SPRINT VELOCITY TRACKER
 
 | Week | Planned Hours | Actual Hours | Tasks Done | Notes |
-|------|-------------|-------------|-----------|-------|
+| ------ | ------------- | ------------- | ----------- | ------- |
 | W1 (Bootstrap) | 8h | ~4h | ✅ Full scaffold | Done Sep 30 |
 | W1 (Auth) | 14h | — | ⏳ | Starts Oct 1 |
 | W2 | 18h | — | ⏳ | |
@@ -563,10 +566,10 @@
 
 ---
 
-## 🚦 RISK REGISTER
+## RISK REGISTER
 
 | Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
+| ------ | ----------- | -------- | ----------- |
 | SMS provider signup delayed | Medium | High | Register Termii/Twilio Week 1 Day 1 |
 | Paystack integration issues | Low | High | Use sandbox aggressively; test webhooks with ngrok |
 | Firebase setup delayed | Low | Medium | Use mock notification service until ready |
@@ -576,11 +579,11 @@
 
 ---
 
-## 📌 BLOCKERS LOG
+## BLOCKERS LOG
 
 | Date | Blocker | Owner | Resolved? |
 |------|---------|-------|-----------|
-| — | — | — | — |
+| —--- | -—----- | —---- | —-------- |
 
 ---
 
@@ -590,6 +593,6 @@
 - [ ] Firebase Service Account JSON
 - [ ] Google Maps API Key
 - [ ] SMS Provider account (Termii / Twilio)
-- [ ] AWS S3 or Cloudflare R2 credentials
+- [x] AWS S3 or Cloudflare R2 credentials
 - [ ] Domain name + SSL (for production)
-- [ ] Cloud server access (Railway / AWS)
+- [x] Cloud server access (Railway / AWS)
