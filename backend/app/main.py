@@ -11,6 +11,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
+from app.db.redis import close_redis
 from app.db.session import close_db, init_db
 from app.modules.admin.router import router as admin_router
 
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
     yield
     await close_db()
+    await close_redis()
     logger.info("allinhelp_api_shutdown")
 
 

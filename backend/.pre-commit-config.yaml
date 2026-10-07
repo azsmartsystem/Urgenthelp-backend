@@ -21,7 +21,7 @@ repos:
         additional_dependencies:
           - pydantic
           - sqlalchemy[mypy]
-          - types-redis
+          - redis>=5.0.0
           - types-passlib
 
   # ── General file hygiene ──────────────────────────────────────────────────

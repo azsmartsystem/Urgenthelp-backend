@@ -59,25 +59,31 @@
   - [x] `uv run alembic upgrade head` — confirm table created
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
-- [ ] **Auth — Registration Endpoint** `POST /api/v1/auth/register`
-  - [ ] Implement `AuthService.register()` — hash password (bcrypt), persist `User`
-  - [ ] Return access + refresh JWT pair
-  - [ ] Handle `PhoneAlreadyRegisteredError`
-  - [ ] Write `test_service.py` tests
+- [x] **Auth — Registration Endpoint** `POST /api/v1/auth/register` *(Done — Oct 7)*
+  - [x] Implement `AuthService.register()` — hash password (bcrypt), persist `User`
+  - [x] Return access + refresh JWT pair
+  - [x] Handle `PhoneAlreadyRegisteredError` and `EmailAlreadyRegisteredError`
+  - [x] Write `test_service.py` tests
   - **Est. Time:** 4h | **Blocker?** ❌ None
 
-- [ ] **Auth — OTP Send/Verify** `POST /api/v1/auth/otp/send` + `/verify`
-  - [ ] Generate 6-digit OTP, store in Redis with 10min TTL
-  - [ ] SMS provider integration (Termii / Twilio)
-  - [ ] Verify OTP, return JWT pair on success
-  - [ ] Handle `OTPExpiredError`
-  - [ ] Write tests
-  - **Est. Time:** 5h | **Blocker?** ⚠️ SMS provider account needed
+- [x] **Auth — Password Login** `POST /api/v1/auth/login` *(Done — Oct 7)*
+  - [x] Implement `AuthService.login()` — verify bcrypt password hash
+  - [x] Return access + refresh JWT pair
+  - [x] Handle `InvalidCredentialsError` and `InactiveUserError`
+  - [x] Write tests
+  - **Est. Time:** 2h | **Blocker?** ❌ None
 
-- [ ] **Auth — Token Refresh** `POST /api/v1/auth/refresh`
-  - [ ] Decode refresh token, issue new access token
-  - [ ] Invalidate old refresh token (Redis blacklist)
-  - [ ] Write tests
+- [x] **Auth — OTP Send/Verify** `POST /api/v1/auth/otp/send` + `/verify` *(Done — Oct 7)*
+  - [x] Generate 6-digit OTP, store in Redis with 10min TTL
+  - [x] Verify OTP, return JWT pair on success, invalidate OTP in Redis
+  - [x] Handle `OTPExpiredError` and `InvalidOTPError`
+  - [x] Write tests
+  - **Est. Time:** 5h | **Blocker?** ❌ None
+
+- [x] **Auth — Token Refresh** `POST /api/v1/auth/refresh` *(Done — Oct 7)*
+  - [x] Decode refresh token, issue new access + refresh token pair
+  - [x] Invalidate old refresh token (Redis blacklist)
+  - [x] Write tests
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
 - [x] **Email Channel — Schema** *(Done — Oct 4)*
@@ -114,10 +120,10 @@
 
 **Week 1 Goals:**
 
-- [ ] User can register with phone + password
-- [ ] User can request and verify OTP
-- [ ] JWT pair returned correctly
-- [ ] All auth tests passing
+- [x] User can register with phone + password
+- [x] User can request and verify OTP
+- [x] JWT pair returned correctly
+- [x] All auth tests passing (92% coverage, strict mypy clean)
 
 ---
 

@@ -1,14 +1,13 @@
-"""Auth module Pydantic schemas — strictly typed, no coercion."""
-
 import re
 from typing import Literal
 
 from app.schemas.base import AppBaseModel
-from pydantic import Field, field_validator
+from pydantic import EmailStr, Field, field_validator
 
 
 class RegisterRequest(AppBaseModel):
     phone: str = Field(examples=["+2348012345678"])
+    email: EmailStr | None = Field(default=None, examples=["user@example.com"])
     full_name: str = Field(min_length=2, max_length=100)
     role: Literal["customer", "helper"]
     password: str = Field(min_length=8, max_length=128)
@@ -28,6 +27,11 @@ class RegisterRequest(AppBaseModel):
         if not any(c.isupper() for c in v):
             raise ValueError("Password must contain at least one uppercase letter.")
         return v
+
+
+class LoginRequest(AppBaseModel):
+    phone: str = Field(examples=["+2348012345678"])
+    password: str = Field(min_length=8, max_length=128)
 
 
 class SendOTPRequest(AppBaseModel):

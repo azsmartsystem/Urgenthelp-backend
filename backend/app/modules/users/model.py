@@ -1,14 +1,10 @@
 """User ORM model."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from sqlalchemy import Boolean, DateTime, Enum, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-if TYPE_CHECKING:
-    from app.modules.bookings.model import Booking
+from sqlalchemy.orm import Mapped, mapped_column
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -33,7 +29,3 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_id_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     trust_score: Mapped[float] = mapped_column(default=50.0, nullable=False)
-
-    bookings_as_customer: Mapped[list["Booking"]] = relationship(
-        "Booking", foreign_keys="Booking.customer_id", back_populates="customer"
-    )

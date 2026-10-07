@@ -23,6 +23,7 @@ dependencies = [
     # Auth
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.0",
 
     # Cache
     "redis[hiredis]>=5.0.0",
@@ -55,12 +56,12 @@ dev = [
     "pytest-cov>=5.0.0",
     "httpx>=0.27.0",          # async test client
     "factory-boy>=3.3.0",     # test fixtures
+    "fakeredis>=2.20.0",      # in-memory redis for testing
     "ruff>=0.6.0",            # linter + formatter
     "mypy>=1.11.0",           # type checker
     "pre-commit>=3.8.0",
     "types-python-jose>=3.3.0",
     "types-passlib>=1.7.7",
-    "types-redis>=4.6.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -90,8 +91,6 @@ select = [
     "RUF", # ruff-specific rules
 ]
 ignore = [
-    "ANN101", # missing type annotation for self
-    "ANN102", # missing type annotation for cls
     "S101",   # use of assert (fine in tests)
     "S105",   # false positive on token_type = "Bearer"
     "UP046",  # mypy does not support PEP 695 type parameter syntax yet
@@ -99,6 +98,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ANN", "S"]
+"**/test_*.py" = ["ANN", "S"]
 "alembic/**/*.py" = ["ANN", "N999", "E501", "W291", "UP035", "UP007"]
 
 [tool.ruff.format]
@@ -116,7 +116,7 @@ exclude = ["^alembic/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "app"]
 addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]

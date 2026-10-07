@@ -2,8 +2,11 @@
 
 from typing import Annotated
 
+import redis.asyncio as aioredis
+from app.db.redis import get_redis
 from app.db.session import get_db
 from app.modules.auth.schemas import (
+    LoginRequest,
     OTPVerifyRequest,
     RefreshTokenRequest,
     RegisterRequest,
@@ -17,8 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter()
 
 
-def _get_service(db: Annotated[AsyncSession, Depends(get_db)]) -> AuthService:
-    return AuthService(db)
+def _get_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+) -> AuthService:
+    return AuthService(db=db, redis_client=redis_client)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
@@ -28,6 +34,15 @@ async def register(
 ) -> TokenResponse:
     """Register a new customer or helper account."""
     return await service.register(payload)
+
+
+@router.post("/login", response_model=TokenResponse)
+async def login(
+    payload: LoginRequest,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> TokenResponse:
+    """Authenticate user with phone and password."""
+    return await service.login(payload)
 
 
 @router.post("/otp/send", status_code=204)

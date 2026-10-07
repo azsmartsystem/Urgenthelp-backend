@@ -59,10 +59,31 @@ class OTPExpiredError(ALLinHELPError):
 
 
 @dataclass
+class InvalidOTPError(ALLinHELPError):
+    code: str = "AUTH_INVALID_OTP"
+    detail: str = "The OTP entered is incorrect."
+    status_code: int = status.HTTP_400_BAD_REQUEST
+
+
+@dataclass
 class PhoneAlreadyRegisteredError(ALLinHELPError):
     code: str = "AUTH_PHONE_TAKEN"
     detail: str = "An account with this phone number already exists."
     status_code: int = status.HTTP_409_CONFLICT
+
+
+@dataclass
+class EmailAlreadyRegisteredError(ALLinHELPError):
+    code: str = "AUTH_EMAIL_TAKEN"
+    detail: str = "An account with this email address already exists."
+    status_code: int = status.HTTP_409_CONFLICT
+
+
+@dataclass
+class InactiveUserError(ALLinHELPError):
+    code: str = "AUTH_USER_INACTIVE"
+    detail: str = "This account has been deactivated or suspended."
+    status_code: int = status.HTTP_403_FORBIDDEN
 
 
 # ─── Users / Helpers ──────────────────────────────────────────────────────────
