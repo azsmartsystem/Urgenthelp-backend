@@ -18,7 +18,15 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Represents both customers and helpers — role field differentiates them."""
 
     __tablename__ = "users"
-    __table_args__ = (CheckConstraint("phone ~ '^234[0-9]{10}$'", name="ck_users_phone_format"),)
+    # Defence in depth: the app normalises and validates phone via the
+    # NigerianPhone annotated type in app/modules/auth/schemas.py before any write.
+    # This regex must therefore accept exactly what
+    # app/core/validators.py::normalize_nigerian_phone accepts — no more, no less.
+    # Alembic does not diff CHECK constraints, so `alembic check` will not catch
+    # divergence here; tests/test_validators.py pins the two together.
+    __table_args__ = (
+        CheckConstraint("phone ~ '^234[789][0-9]{9}$'", name="ck_users_phone_format"),
+    )
 
     phone: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
     # Email is NOT a login identifier. It is a verified recovery/notification channel.
