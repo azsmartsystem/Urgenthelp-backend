@@ -1,10 +1,8 @@
-from typing import Annotated, Literal
+from typing import Literal
 
-from app.core.validators import normalize_nigerian_phone
+from app.core.validators import NigerianPhone
 from app.schemas.base import AppBaseModel
-from pydantic import BeforeValidator, EmailStr, Field, field_validator
-
-NigerianPhone = Annotated[str, BeforeValidator(normalize_nigerian_phone)]
+from pydantic import EmailStr, Field, field_validator
 
 
 class RegisterRequest(AppBaseModel):

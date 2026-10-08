@@ -97,8 +97,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["ANN", "S"]
-"**/test_*.py" = ["ANN", "S"]
+# RUF001/RUF003 flag non-ASCII digits; test fixtures deliberately contain them
+# (e.g. phone numbers written in Arabic-Indic digits) to prove the validator
+# rejects them. Suppressing the rule file-wide is the only practical option
+# because the characters are the subject under test, not incidental prose.
+"tests/**/*.py" = ["ANN", "S", "RUF001", "RUF003"]
+"**/test_*.py" = ["ANN", "S", "RUF001", "RUF003"]
 "alembic/**/*.py" = ["ANN", "N999", "E501", "W291", "UP035", "UP007"]
 
 [tool.ruff.format]

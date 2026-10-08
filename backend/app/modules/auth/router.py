@@ -3,6 +3,7 @@
 from typing import Annotated
 
 import redis.asyncio as aioredis
+from app.core.validators import CanonicalPhone
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.modules.auth.schemas import (
@@ -51,7 +52,10 @@ async def send_otp(
     service: Annotated[AuthService, Depends(_get_service)],
 ) -> None:
     """Send an OTP to the given phone number."""
-    await service.send_otp(payload.phone)
+    # The schema guarantees payload.phone is already canonical; CanonicalPhone
+    # records that for the type checker. This is the single narrowing point
+    # between raw user input and the service layer.
+    await service.send_otp(CanonicalPhone(payload.phone))
 
 
 @router.post("/otp/verify", response_model=TokenResponse)
