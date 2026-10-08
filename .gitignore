@@ -1,5 +1,5 @@
 # ============================================================
-#  ALLinHELP — Root .gitignore
+#  UrgentHelp — Root .gitignore
 # ============================================================
 
 # ── macOS ────────────────────────────────────────────────────
@@ -27,8 +27,6 @@ commitlint.config.js
 *.pdf
 
 
-# ── Zephyr tracker (old project reference only) ──────────────
-zephyr_tracker.md
 
 # ============================================================
 #  backend/  — Python / FastAPI
@@ -107,3 +105,11 @@ docker-compose.override.yml
 
 # Others
 DISCOVERY_NOTES.md
+PAYMENT_OPERATIONS_REPORT.md
+
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+.opencode
+typings/

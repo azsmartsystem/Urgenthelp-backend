@@ -46,7 +46,7 @@ class TokenPayload(BaseModel):
 
 def create_access_token(user_id: UUID, role: str, settings: Settings) -> str:
     now = datetime.now(UTC)
-    payload = {
+    payload: dict[str, str | datetime] = {
         "sub": str(user_id),
         "role": role,
         "type": "access",
@@ -58,7 +58,7 @@ def create_access_token(user_id: UUID, role: str, settings: Settings) -> str:
 
 def create_refresh_token(user_id: UUID, role: str, settings: Settings) -> str:
     now = datetime.now(UTC)
-    payload = {
+    payload: dict[str, str | datetime] = {
         "sub": str(user_id),
         "role": role,
         "type": "refresh",

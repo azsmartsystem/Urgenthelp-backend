@@ -4,12 +4,16 @@ import uuid
 from typing import TYPE_CHECKING, ClassVar
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+# Runtime import (not TYPE_CHECKING): relationship() targets are resolved from
+# SQLAlchemy's class registry at mapper-config time, so a TYPE_CHECKING-only
+# import makes the mapper fail with "failed to locate a name".
+from app.modules.categories.model import ServiceCategory
 from sqlalchemy import Enum, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
-    from app.modules.categories.model import ServiceCategory
     from app.modules.users.model import User
 
 
@@ -53,7 +57,7 @@ class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     customer: Mapped["User"] = relationship(
         "User", foreign_keys=[customer_id], back_populates="bookings_as_customer"
     )
-    category: Mapped["ServiceCategory"] = relationship("ServiceCategory")
+    category: Mapped[ServiceCategory] = relationship(ServiceCategory)
 
     # Valid state transitions — enforced by BookingService, not the DB
     VALID_TRANSITIONS: ClassVar[dict[str, list[str]]] = {

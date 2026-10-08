@@ -1,6 +1,6 @@
-# ALLinHELP Backend
+# UrgentHelp Backend
 
-ALLinHELP is an AI-assisted, on-demand marketplace platform for local services. The backend provides a modular, async RESTful API and real-time infrastructure to handle user onboarding, helper dispatching, pricing, payments, in-app messaging, trust verification, and administrative controls.
+UrgentHelp is an AI-assisted, on-demand marketplace platform for local services. The backend provides a modular, async RESTful API and real-time infrastructure to handle user onboarding, helper dispatching, pricing, payments, in-app messaging, trust verification, and administrative controls.
 
 ---
 
@@ -123,7 +123,7 @@ ENVIRONMENT=development
 PORT=8000
 DEBUG=true
 
-DATABASE_URL=postgresql://postgres:password@localhost:5432/allinhelp_db
+DATABASE_URL=postgresql://postgres:password@localhost:5432/UrgentHelp_db
 REDIS_URL=redis://localhost:6379/0
 
 JWT_ACCESS_SECRET=your_32_character_minimum_access_secret_here
@@ -134,7 +134,7 @@ PAYSTACK_PUBLIC_KEY=pk_test_placeholder
 
 AWS_ACCESS_KEY_ID=placeholder
 AWS_SECRET_ACCESS_KEY=placeholder
-AWS_S3_BUCKET=allinhelp-dev
+AWS_S3_BUCKET=UrgentHelp-dev
 
 FIREBASE_CREDENTIALS_JSON=./firebase-service-account.json
 GOOGLE_MAPS_API_KEY=placeholder
@@ -209,6 +209,18 @@ Run Mypy in strict mode:
 ```bash
 uv run mypy app/
 ```
+
+This checks every file under `app/`. Use `uv run mypy` to check the whole project
+(`app/`, `tests/` and `gunicorn.conf.py`), or add `--no-incremental` to force a
+full re-check instead of reusing the `.mypy_cache/` results:
+
+```bash
+uv run mypy app/ --no-incremental
+```
+
+Note: do not use `mypy -m app`. `-m` resolves only the single module named `app`
+— which is just `app/__init__.py` — so it reports "1 source file" while checking
+none of your application code.
 
 ### Code Formatting and Linting
 

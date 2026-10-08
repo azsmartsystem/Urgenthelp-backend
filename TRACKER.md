@@ -1,7 +1,7 @@
-# 🚀 ALLINHELP BACKEND — PROJECT TRACKER
+# 🚀 UrgentHelp BACKEND — PROJECT TRACKER
 
 **Developer:** Backend Dev, Patrick Okafor
-**Client:** ALLinHELP
+**Client:** UrgentHelp
 **Contract Start:** October 1, 2026
 **Contract End:** December 31, 2026 (13 weeks)
 **Daily Commitment:** ~4 hours/day (AI-assisted)

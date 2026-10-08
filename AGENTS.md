@@ -1,13 +1,13 @@
-# AGENTS.md — ALLinHELP Backend
+# AGENTS.md — UrgentHelp Backend
 
-This file defines the rules, conventions, and architectural decisions for the ALLinHELP FastAPI backend.
+This file defines the rules, conventions, and architectural decisions for the UrgentHelp FastAPI backend.
 Read this entire file before writing, editing, or reviewing any code in this project.
 
 ---
 
 ## Project Overview
 
-ALLinHELP is a Solana-inspired, AI-assisted marketplace for local services. The backend is responsible for:
+UrgentHelp is a Solana-inspired, AI-assisted marketplace for local services. The backend is responsible for:
 
 - Phone + OTP authentication with JWT
 - User and Helper profile management (single unified user model, role-based)
@@ -35,13 +35,21 @@ ALLinHELP is a Solana-inspired, AI-assisted marketplace for local services. The 
 
 ### No `Any` — ever
 
+Enforced by ruff `ANN401`, not mypy (see [below](#why-disallow_any_explicit-stays-false)
+for why mypy's `disallow_any_explicit` cannot be used with Pydantic).
+
 ```python
 # ❌ Never do this
 def process(data: Any) -> Any: ...
+
+
 result: Any = await some_call()
+
 
 # ✅ Do this instead
 def process(data: BookingRequest) -> BookingResult: ...
+
+
 result: BookingResult = await some_call()
 ```
 
@@ -51,12 +59,10 @@ If the shape of external data is unknown (e.g. raw API responses), use `object` 
 # ✅ Use TypeGuard to narrow unknown external data
 from typing import TypeGuard
 
+
 def is_paystack_event(raw: object) -> TypeGuard[PaystackEvent]:
-    return (
-        isinstance(raw, dict)
-        and "event" in raw
-        and "data" in raw
-    )
+    return isinstance(raw, dict) and "event" in raw and "data" in raw
+
 
 raw = response.json()
 if not is_paystack_event(raw):
@@ -69,10 +75,30 @@ if not is_paystack_event(raw):
 
 ```toml
 [tool.mypy]
+files = ["app", "tests", "gunicorn.conf.py"]
 strict = true
-disallow_any_explicit = true
 warn_unreachable = true
 ```
+
+`files` makes bare `uv run mypy` check everything; passing a path overrides it
+(`mypy app/modules/bookings`). Note `mypy -m app` checks only `app/__init__.py`
+and follows no imports — use `mypy app`, `mypy -p app`, or bare `mypy` instead.
+
+#### Why `disallow_any_explicit` stays `false`
+
+`disallow_any_explicit = true` **cannot** be used with Pydantic v2. Pydantic's
+`BaseModel` declares `__pydantic_extra__: dict[str, Any] | None` and
+`__init__(self, /, **data: Any)`, and mypy attributes those inherited `Any`
+annotations to *every* subclass. Each Pydantic model in the codebase therefore
+raises `Explicit "Any" is not allowed` on its `class Foo(BaseModel):` line, even
+though no `Any` appears in our source.
+
+The "no `Any` — ever" rule is therefore enforced by **ruff `ANN401`**
+(`any-type`), which is already active via the `ANN` select in `[tool.ruff.lint]`
+and flags only `Any` written in our own annotations. Run `uv run ruff check app/`
+to audit it. If you ever need mypy's own check, drop
+`plugins = ["pydantic.mypy"]` as well — but that costs correct `BaseSettings`
+validation and produces 11 spurious `call-arg` errors on `Settings()`.
 
 Never add `# type: ignore` without a comment explaining why, and never to silence a legitimate type error. Fix the code instead.
 
@@ -89,6 +115,7 @@ All incoming data (request bodies, query params, settings) is validated using **
 from typing import Literal
 from pydantic import Field, field_validator
 from app.schemas.base import AppBaseModel
+
 
 class CreateBookingRequest(AppBaseModel):
     category: str = Field(min_length=2, max_length=50)
@@ -110,8 +137,8 @@ class CreateBookingRequest(AppBaseModel):
 # app/schemas/base.py
 class AppBaseModel(BaseModel):
     model_config = ConfigDict(
-        from_attributes=True,   # ORM → schema serialisation
-        strict=True,             # no silent coercion
+        from_attributes=True,  # ORM → schema serialisation
+        strict=True,  # no silent coercion
         populate_by_name=True,
     )
 ```
@@ -153,7 +180,7 @@ Every domain error must be a typed dataclass exception. Never raise bare `Except
 ```python
 # app/core/exceptions.py
 @dataclass
-class BookingNotFoundError(ALLinHELPError):
+class BookingNotFoundError(UrgentHelpError):
     code: str = "BOOKING_NOT_FOUND"
     detail: str = "Booking not found."
     status_code: int = status.HTTP_404_NOT_FOUND
@@ -167,7 +194,7 @@ if booking is None:
     raise BookingNotFoundError(context={"booking_id": str(booking_id)})
 ```
 
-The global exception handler in `app/core/exceptions.py` converts all `ALLinHELPError` subclasses into consistent JSON:
+The global exception handler in `app/core/exceptions.py` converts all `UrgentHelpError` subclasses into consistent JSON:
 
 ```json
 {
@@ -189,6 +216,7 @@ print(f"Booking created: {booking_id}")
 
 # ✅ Always
 import structlog
+
 logger = structlog.get_logger(__name__)
 logger.info("booking_created", booking_id=str(booking_id), customer_id=str(customer_id))
 ```
@@ -237,7 +265,9 @@ All rule-based AI engines live in `app/engines/`. Each engine has a clean typed 
 
 ```python
 # Clean input/output dataclasses — never pass raw dicts
-def rank_helpers(candidates: list[HelperCandidate], job: JobRequest, top_n: int = 5) -> list[RankedHelper]: ...
+def rank_helpers(
+    candidates: list[HelperCandidate], job: JobRequest, top_n: int = 5
+) -> list[RankedHelper]: ...
 def recommend_price(request: PricingRequest) -> PriceRange: ...
 def calculate_trust_score(data: TrustInput) -> float: ...
 def run_fraud_check(ctx: FraudContext) -> list[FraudFlag]: ...
@@ -290,8 +320,10 @@ All payment interactions go through `app/modules/payments/service.py`. No other 
 class BookingService:
     def __init__(self, db: AsyncSession, payment_service: PaymentService) -> None: ...
 
+
 # ❌ Never — call Paystack directly from another service
 import httpx
+
 resp = httpx.post("https://api.paystack.co/...")
 ```
 
@@ -300,6 +332,7 @@ Paystack webhook signatures must always be verified before processing:
 ```python
 def verify_paystack_signature(payload: bytes, signature: str, secret: str) -> bool:
     import hmac, hashlib
+
     computed = hmac.new(secret.encode(), payload, hashlib.sha512).hexdigest()
     return hmac.compare_digest(computed, signature)
 ```
@@ -314,10 +347,13 @@ All environment variables are validated at startup by `Settings` in `app/core/co
 # ✅ Always inject settings via dependency
 from app.core.config import get_settings, Settings
 
+
 def some_function(settings: Annotated[Settings, Depends(get_settings)]) -> ...: ...
+
 
 # ❌ Never call os.getenv() inline anywhere else
 import os
+
 key = os.getenv("PAYSTACK_SECRET_KEY")
 ```
 
@@ -353,6 +389,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from app.modules.bookings.service import BookingService
 from app.core.exceptions import BookingNotFoundError
+
 
 @pytest.mark.asyncio
 async def test_get_booking_raises_when_not_found():
@@ -424,6 +461,60 @@ uv run alembic downgrade -1
 # Install git hooks (run once after cloning)
 uv run pre-commit install --hook-type commit-msg --hook-type pre-commit
 ```
+
+---
+
+## Opencode Agents
+
+Project-specific agents live in `.opencode/` and are part of this repo. Config is
+loaded at startup and is **not** hot-reloaded — quit and restart opencode after
+adding or editing any file there.
+
+### How to summon them
+
+There are three ways, in descending order of reliability:
+
+| Method | How | Notes |
+|---|---|---|
+| **Slash command** | `/review`, `/migration-audit`, `/write-tests` | Most reliable. Pass a scope: `/review app/modules/payments` |
+| **Name the agent** | "use the code-reviewer agent to check my diff" | Explicit, works from any prompt |
+| **Automatic delegation** | Just ask for the work | The primary agent may delegate on its own, based on each agent's `description`. Not guaranteed — prefer one of the above when it matters |
+
+Commands accept free-text scope after the name. With no argument they default to
+the uncommitted working-tree changes.
+
+### The agents
+
+| Agent | Edits? | Use it for |
+|---|---|---|
+| `code-reviewer` | No — `edit: deny` | Before committing. Reports bugs, security holes, and convention violations, ordered Blocking / Should fix / Nit. |
+| `migration-auditor` | No — `edit: deny` | After changing any `model.py`. Catches drift, multiple heads, missing tables, and unsafe operations. Will not run `alembic upgrade`/`downgrade`/`revision`. |
+| `test-writer` | Yes — writes tests only | After adding or changing a `service.py` method. Enforces the test rules in [Testing](#testing). Must not edit production code to make a test pass. |
+
+### When to reach for each
+
+- **Wrote or changed service code** → `/review`. Before commit, not after.
+- **Added or edited a `model.py`** → `/migration-audit`, then `/review`. The
+  auditor must run before `alembic revision --autogenerate`, because it catches
+  models that autogenerate cannot see.
+- **Added a public service method** → `/write-tests`. A method with no test is
+  unfinished, per [Testing](#testing).
+- **About to run `alembic upgrade`** → `/migration-audit` first, especially when
+  the migration adds a Postgres enum.
+- **Debugging a runtime error in the ORM** → the two most common causes are a
+  `model.py` not imported in `alembic/env.py`, and a `relationship()` target
+  that is only imported under `TYPE_CHECKING`. Both are invisible to static
+  search and both surface as confusing mapper errors at runtime.
+
+### Notes
+
+- The agents read [AGENTS.md](AGENTS.md) as their baseline, so you do not need
+  to restate conventions when invoking them.
+- `code-reviewer` and `migration-auditor` are read-only. They report; you decide
+  whether to apply the fix. Do not ask them to "just fix it" — that contradicts
+  their permission config.
+- Neither agent replaces `uv run pytest`, `uv run mypy`, or `uv run ruff check`.
+  They run those to verify, but the gates still gate.
 
 ---
 

@@ -1,7 +1,7 @@
 [project]
-name = "allinhelp-backend"
+name = "UrgentHelp-backend"
 version = "0.1.0"
-description = "ALLinHELP – Marketplace backend API"
+description = "UrgentHelp – Marketplace backend API"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -107,6 +107,9 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.12"
+# Checked by default when `mypy` is run with no arguments. Pass explicit paths
+# on the CLI to override, e.g. `mypy app/modules/bookings`.
+files = ["app", "tests", "gunicorn.conf.py"]
 strict = true
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = false

@@ -3,8 +3,15 @@
 from datetime import datetime
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+# Runtime import (not TYPE_CHECKING): the relationship below must be able to
+# resolve Bookings.customer_id. A string like "Booking.customer_id" is looked up
+# in SQLAlchemy's class registry at mapper-config time, so it raises NameError
+# whenever this module is imported without app.modules.bookings.model. Passing
+# the real column object needs no registry lookup.
+from app.modules.bookings.model import Booking
 from sqlalchemy import Boolean, DateTime, Enum, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -29,3 +36,11 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_id_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     trust_score: Mapped[float] = mapped_column(default=50.0, nullable=False)
+
+    # Bookings placed by this user. bookings.helper_id is deliberately not wired
+    # up yet — Booking declares no `helper` relationship to pair with.
+    bookings_as_customer: Mapped[list["Booking"]] = relationship(
+        "Booking",
+        foreign_keys=[Booking.__table__.c.customer_id],
+        back_populates="customer",
+    )

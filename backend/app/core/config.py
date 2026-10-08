@@ -5,15 +5,20 @@ if any required variable is missing or malformed. No silent failures.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Resolve .env relative to this file (backend/.env), not the process CWD, so the
+# app starts correctly whether uvicorn is launched from the repo root or backend/.
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(_BACKEND_ROOT / ".env", Path(".env")),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="forbid",  # crash if unknown env vars are passed — no silent misconfig
@@ -63,7 +68,7 @@ class Settings(BaseSettings):
 
     # ── Email (transactional: password reset, verification, receipts) ─────────
     EMAIL_PROVIDER_API_KEY: str | None = None  # Resend / SendGrid / SES key
-    EMAIL_FROM_ADDRESS: str = "no-reply@allinhelp.com"
+    EMAIL_FROM_ADDRESS: str = "no-reply@UrgentHelp.com"
     EMAIL_VERIFICATION_EXPIRE_HOURS: int = Field(default=24, ge=1)
     PASSWORD_RESET_EXPIRE_MINUTES: int = Field(default=30, ge=5, le=120)
 

@@ -1,4 +1,4 @@
-"""ALLinHELP FastAPI application entry point."""
+"""UrgentHelp FastAPI application entry point."""
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -11,6 +11,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
+from app.core.middleware import RequestTimingMiddleware
 from app.db.redis import close_redis
 from app.db.session import close_db, init_db
 from app.modules.admin.router import router as admin_router
@@ -35,12 +36,12 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application startup and shutdown lifecycle."""
     configure_logging()
-    logger.info("allinhelp_api_starting", environment=settings.ENVIRONMENT)
+    logger.info("UrgentHelp_api_starting", environment=settings.ENVIRONMENT)
     await init_db()
     yield
     await close_db()
     await close_redis()
-    logger.info("allinhelp_api_shutdown")
+    logger.info("UrgentHelp_api_shutdown")
 
 
 def create_application() -> FastAPI:
@@ -48,8 +49,8 @@ def create_application() -> FastAPI:
     # Explicit type annotation so Pyright strict mode can fully resolve all
     # downstream calls (register_exception_handlers, include_router, etc.)
     application: FastAPI = FastAPI(
-        title="ALLinHELP API",
-        description="Marketplace backend for ALLinHELP service platform",
+        title="UrgentHelp API",
+        description="Marketplace backend for UrgentHelp service platform",
         version="0.1.0",
         # Disable docs in production
         docs_url="/docs" if settings.ENVIRONMENT != "production" else None,
@@ -78,6 +79,8 @@ def create_application() -> FastAPI:
             else [settings.ALLOWED_HOSTS]
         ),
     )
+    # Added last so it wraps the whole stack and measures end-to-end duration.
+    application.add_middleware(RequestTimingMiddleware)
 
     # --- Exception handlers ---
     register_exception_handlers(application)

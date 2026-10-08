@@ -3,7 +3,13 @@
 import asyncio
 from logging.config import fileConfig
 
-# Import models for migrations
+# Import every model module so Base.metadata is complete before autogenerate
+# runs. Models only register themselves via import side-effects, so an unimported
+# module is invisible to autogenerate — it will report "no new upgrade
+# operations" while the table is missing from the database. Add a new import
+# here whenever you add a model.py.
+import app.modules.bookings.model
+import app.modules.categories.model
 import app.modules.notifications.model
 import app.modules.users.model  # noqa: F401
 from alembic import context
