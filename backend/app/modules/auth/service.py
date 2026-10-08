@@ -27,6 +27,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.core.validators import normalize_nigerian_phone
 from app.modules.auth.schemas import (
     LoginRequest,
     OTPVerifyRequest,
@@ -106,6 +107,7 @@ class AuthService:
 
     async def send_otp(self, phone: str) -> None:
         """Generate and store an OTP in Redis, dispatching it to the user."""
+        phone = normalize_nigerian_phone(phone)
         otp = f"{secrets.randbelow(900000) + 100000}"
         redis_key = f"otp:{phone}"
         ttl_seconds = self._settings.OTP_EXPIRE_MINUTES * 60

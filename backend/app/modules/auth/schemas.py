@@ -1,23 +1,18 @@
-import re
-from typing import Literal
+from typing import Annotated, Literal
 
+from app.core.validators import normalize_nigerian_phone
 from app.schemas.base import AppBaseModel
-from pydantic import EmailStr, Field, field_validator
+from pydantic import BeforeValidator, EmailStr, Field, field_validator
+
+NigerianPhone = Annotated[str, BeforeValidator(normalize_nigerian_phone)]
 
 
 class RegisterRequest(AppBaseModel):
-    phone: str = Field(examples=["+2348012345678"])
+    phone: NigerianPhone = Field(examples=["2348153551975"])
     email: EmailStr | None = Field(default=None, examples=["user@example.com"])
     full_name: str = Field(min_length=2, max_length=100)
     role: Literal["customer", "helper"]
     password: str = Field(min_length=8, max_length=128)
-
-    @field_validator("phone")
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        if not re.match(r"^\+?[1-9]\d{7,14}$", v):
-            raise ValueError("Invalid phone number format.")
-        return v
 
     @field_validator("password")
     @classmethod
@@ -30,16 +25,16 @@ class RegisterRequest(AppBaseModel):
 
 
 class LoginRequest(AppBaseModel):
-    phone: str = Field(examples=["+2348012345678"])
+    phone: NigerianPhone = Field(examples=["2348153551975"])
     password: str = Field(min_length=8, max_length=128)
 
 
 class SendOTPRequest(AppBaseModel):
-    phone: str = Field(examples=["+2348012345678"])
+    phone: NigerianPhone = Field(examples=["2348153551975"])
 
 
 class OTPVerifyRequest(AppBaseModel):
-    phone: str
+    phone: NigerianPhone = Field(examples=["2348153551975"])
     otp: str = Field(min_length=4, max_length=8)
 
 

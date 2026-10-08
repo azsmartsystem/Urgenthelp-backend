@@ -10,7 +10,7 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # whenever this module is imported without app.modules.bookings.model. Passing
 # the real column object needs no registry lookup.
 from app.modules.bookings.model import Booking
-from sqlalchemy import Boolean, DateTime, Enum, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -18,6 +18,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """Represents both customers and helpers — role field differentiates them."""
 
     __tablename__ = "users"
+    __table_args__ = (CheckConstraint("phone ~ '^234[0-9]{10}$'", name="ck_users_phone_format"),)
 
     phone: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
     # Email is NOT a login identifier. It is a verified recovery/notification channel.

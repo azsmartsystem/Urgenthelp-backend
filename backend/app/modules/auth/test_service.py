@@ -30,6 +30,7 @@ from app.modules.auth.schemas import (
     LoginRequest,
     OTPVerifyRequest,
     RegisterRequest,
+    SendOTPRequest,
 )
 from app.modules.auth.service import AuthService
 from app.modules.users.model import User
@@ -273,7 +274,7 @@ async def test_send_otp_success(
     auth_service: AuthService,
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
-    phone = "+2348012345678"
+    phone = "2348012345678"
     await auth_service.send_otp(phone)
 
     stored_otp = await fake_redis.get(f"otp:{phone}")
@@ -289,7 +290,7 @@ async def test_send_otp_production_mode(
 ) -> None:
     prod_settings = settings.model_copy(update={"ENVIRONMENT": "production"})
     service = AuthService(db=mock_db, redis_client=fake_redis, settings=prod_settings)
-    phone = "+2348012345678"
+    phone = "2348012345678"
     await service.send_otp(phone)
 
     stored_otp = await fake_redis.get(f"otp:{phone}")
@@ -303,7 +304,7 @@ async def test_verify_otp_success(
     mock_db: AsyncMock,
     settings: Settings,
 ) -> None:
-    phone = "+2348012345678"
+    phone = "2348012345678"
     otp = "123456"
     await fake_redis.set(f"otp:{phone}", otp)
 
@@ -332,7 +333,7 @@ async def test_verify_otp_success(
 async def test_verify_otp_expired_raises(
     auth_service: AuthService,
 ) -> None:
-    payload = OTPVerifyRequest(phone="+2348012345678", otp="123456")
+    payload = OTPVerifyRequest(phone="2348012345678", otp="123456")
     with pytest.raises(OTPExpiredError):
         await auth_service.verify_otp(payload)
 
@@ -342,7 +343,7 @@ async def test_verify_otp_invalid_raises(
     auth_service: AuthService,
     fake_redis: fakeredis.aioredis.FakeRedis,
 ) -> None:
-    phone = "+2348012345678"
+    phone = "2348012345678"
     await fake_redis.set(f"otp:{phone}", "123456")
 
     payload = OTPVerifyRequest(phone=phone, otp="654321")
@@ -356,7 +357,7 @@ async def test_verify_otp_user_not_found_raises(
     fake_redis: fakeredis.aioredis.FakeRedis,
     mock_db: AsyncMock,
 ) -> None:
-    phone = "+2348012345678"
+    phone = "2348012345678"
     await fake_redis.set(f"otp:{phone}", "123456")
 
     mock_result = MagicMock()
@@ -374,7 +375,7 @@ async def test_verify_otp_inactive_user_raises(
     fake_redis: fakeredis.aioredis.FakeRedis,
     mock_db: AsyncMock,
 ) -> None:
-    phone = "+2348012345678"
+    phone = "2348012345678"
     await fake_redis.set(f"otp:{phone}", "123456")
 
     user = User(
@@ -564,3 +565,70 @@ def test_require_role_forbidden_raises(settings: Settings) -> None:
     check_admin = require_role("admin")
     with pytest.raises(ForbiddenError):
         check_admin(payload)
+
+
+# ─── Nigerian Phone Normalization Tests ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw_input, expected",
+    [
+        ("08153551975", "2348153551975"),
+        ("2348153551975", "2348153551975"),
+        ("+2348153551975", "2348153551975"),
+        ("0815 355 1975", "2348153551975"),
+        ("+234 815 355 1975", "2348153551975"),
+        ("+234-815-355-1975", "2348153551975"),
+        ("07031234567", "2347031234567"),
+        ("09081234567", "2349081234567"),
+        ("09121234567", "2349121234567"),
+    ],
+)
+def test_normalize_nigerian_phone_valid(raw_input: str, expected: str) -> None:
+    from app.core.validators import normalize_nigerian_phone
+
+    assert normalize_nigerian_phone(raw_input) == expected
+
+
+@pytest.mark.parametrize(
+    "invalid_input",
+    [
+        "0815355197",  # 10 digits (too short)
+        "081535519755",  # 12 digits (too long)
+        "06153551975",  # invalid starting digit (06)
+        "+1234567890123",  # US number
+        "2345012345678",  # invalid prefix
+        "abc8153551975",  # alphanumeric
+        "",  # empty
+    ],
+)
+def test_normalize_nigerian_phone_invalid_raises(invalid_input: str) -> None:
+    from app.core.validators import normalize_nigerian_phone
+
+    with pytest.raises(ValueError):
+        normalize_nigerian_phone(invalid_input)
+
+
+def test_register_schema_normalizes_local_phone() -> None:
+    req = RegisterRequest(
+        phone="08153551975",
+        full_name="Test User",
+        password="SecurePassword1!",
+        role="customer",
+    )
+    assert req.phone == "2348153551975"
+
+
+def test_login_schema_normalizes_local_phone() -> None:
+    req = LoginRequest(phone="08153551975", password="SecurePassword1!")
+    assert req.phone == "2348153551975"
+
+
+def test_send_otp_schema_normalizes_local_phone() -> None:
+    req = SendOTPRequest(phone="0815 355 1975")
+    assert req.phone == "2348153551975"
+
+
+def test_otp_verify_schema_normalizes_local_phone() -> None:
+    req = OTPVerifyRequest(phone="+234-815-355-1975", otp="123456")
+    assert req.phone == "2348153551975"

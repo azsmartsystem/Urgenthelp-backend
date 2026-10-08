@@ -151,7 +151,7 @@ FastAPI automatically validates request bodies — you do not need a separate va
 
 Every feature module follows this exact structure — no exceptions:
 
-```
+```markdown
 app/modules/<feature>/
 ├── router.py       — HTTP only: routing, calling service, returning response
 ├── service.py      — business logic only: no HTTP awareness
@@ -224,7 +224,7 @@ logger.info("booking_created", booking_id=str(booking_id), customer_id=str(custo
 ### Log levels
 
 | Situation | Level |
-|-----------|-------|
+| ----------- | ------- |
 | Normal operation, significant events | `info` |
 | Business rule violations (no helpers found, insufficient balance) | `warning` |
 | Unexpected errors, external API failures | `error` |
@@ -294,7 +294,8 @@ booking.status = "completed"  # bypasses validation
 ```
 
 Valid transitions:
-```
+
+```markdown
 requested → matched → accepted → en_route → in_progress → completed
                 ↘ cancelled      ↘ cancelled                ↘ disputed → completed/cancelled
 ```
@@ -373,7 +374,7 @@ Tests are not optional. Every service method must have a test. No PR merges with
 
 ### Coverage requirements
 
-```
+```zsh
 Statements:  80% minimum
 Functions:   90% minimum
 ```
@@ -408,7 +409,7 @@ async def test_get_booking_raises_when_not_found():
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) enforced by `pre-commit`.
 
 | Type | When to use |
-|------|-------------|
+| ------ | ------------- |
 | `feat` | New endpoint, service method, or engine logic |
 | `fix` | Bug fix |
 | `refactor` | Restructure without behaviour change |
@@ -475,7 +476,7 @@ adding or editing any file there.
 There are three ways, in descending order of reliability:
 
 | Method | How | Notes |
-|---|---|---|
+| --- | --- | --- |
 | **Slash command** | `/review`, `/migration-audit`, `/write-tests` | Most reliable. Pass a scope: `/review app/modules/payments` |
 | **Name the agent** | "use the code-reviewer agent to check my diff" | Explicit, works from any prompt |
 | **Automatic delegation** | Just ask for the work | The primary agent may delegate on its own, based on each agent's `description`. Not guaranteed — prefer one of the above when it matters |
@@ -486,7 +487,7 @@ the uncommitted working-tree changes.
 ### The agents
 
 | Agent | Edits? | Use it for |
-|---|---|---|
+| --- | --- | --- |
 | `code-reviewer` | No — `edit: deny` | Before committing. Reports bugs, security holes, and convention violations, ordered Blocking / Should fix / Nit. |
 | `migration-auditor` | No — `edit: deny` | After changing any `model.py`. Catches drift, multiple heads, missing tables, and unsafe operations. Will not run `alembic upgrade`/`downgrade`/`revision`. |
 | `test-writer` | Yes — writes tests only | After adding or changing a `service.py` method. Enforces the test rules in [Testing](#testing). Must not edit production code to make a test pass. |

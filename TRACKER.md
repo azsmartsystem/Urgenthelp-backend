@@ -86,6 +86,14 @@
   - [x] Write tests
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
+- [x] **Nigerian Phone Normalization & DB Constraint** *(Done — Oct 8)*
+  - [x] Auto-convert `08...`, `234...`, `+234...`, formatted strings to `234XXXXXXXXXX`
+  - [x] Pydantic `NigerianPhone` type validator across all auth request schemas
+  - [x] PostgreSQL CHECK constraint `ck_users_phone_format` on `users.phone`
+  - [x] Alembic migration `26db6f25013c`
+  - [x] Unit & integration tests (70 passed, 92.88% coverage)
+  - **Est. Time:** 2h | **Blocker?** ❌ None
+
 - [x] **Email Channel — Schema** *(Done — Oct 4)*
   - [x] `users.email` (nullable, unique, not a login identifier)
   - [x] `users.email_verified_at` (only verified emails may receive reset links)

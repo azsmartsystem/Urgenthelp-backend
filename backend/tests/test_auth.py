@@ -112,12 +112,12 @@ async def test_api_send_otp_success(
     auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
 ) -> None:
     client, _, redis = auth_client
-    payload = {"phone": "+2348011112222"}
+    payload = {"phone": "08011112222"}
 
     response = await client.post("/api/v1/auth/otp/send", json=payload)
     assert response.status_code == 204
 
-    stored_otp = await redis.get("otp:+2348011112222")
+    stored_otp = await redis.get("otp:2348011112222")
     assert stored_otp is not None
 
 
@@ -126,13 +126,13 @@ async def test_api_verify_otp_success(
     auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
 ) -> None:
     client, mock_db, redis = auth_client
-    phone = "+2348011112222"
+    canonical_phone = "2348011112222"
     otp = "123456"
-    await redis.set(f"otp:{phone}", otp)
+    await redis.set(f"otp:{canonical_phone}", otp)
 
     user = User(
         id=uuid.uuid4(),
-        phone=phone,
+        phone=canonical_phone,
         full_name="Test User",
         hashed_password="hash",
         role="customer",
@@ -142,7 +142,8 @@ async def test_api_verify_otp_success(
     mock_result.scalar_one_or_none.return_value = user
     mock_db.execute.return_value = mock_result
 
-    payload = {"phone": phone, "otp": otp}
+    # Send in local format 080... to ensure normalization works on verify
+    payload = {"phone": "08011112222", "otp": otp}
     response = await client.post("/api/v1/auth/otp/verify", json=payload)
     assert response.status_code == 200
     data = response.json()
