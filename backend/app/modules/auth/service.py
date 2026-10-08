@@ -27,7 +27,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.core.validators import normalize_nigerian_phone
+from app.core.validators import CanonicalPhone
 from app.modules.auth.schemas import (
     LoginRequest,
     OTPVerifyRequest,
@@ -105,9 +105,16 @@ class AuthService:
         refresh_token = create_refresh_token(user.id, user.role, self._settings)
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
-    async def send_otp(self, phone: str) -> None:
-        """Generate and store an OTP in Redis, dispatching it to the user."""
-        phone = normalize_nigerian_phone(phone)
+    async def send_otp(self, phone: CanonicalPhone) -> None:
+        """Generate and store an OTP in Redis, dispatching it to the user.
+
+        The CanonicalPhone annotation is the guarantee that `phone` is already
+        in canonical form: normalization happens once at the schema boundary via
+        the NigerianPhone annotated type, and mypy rejects any caller that tries
+        to pass a raw "0815… " string. Without it, such a caller would write an
+        `otp:0815…` key that verify_otp — which looks up the canonical form —
+        could never find.
+        """
         otp = f"{secrets.randbelow(900000) + 100000}"
         redis_key = f"otp:{phone}"
         ttl_seconds = self._settings.OTP_EXPIRE_MINUTES * 60
@@ -121,27 +128,36 @@ class AuthService:
 
     async def verify_otp(self, payload: OTPVerifyRequest) -> TokenResponse:
         """Verify an OTP and return JWT tokens upon success."""
-        redis_key = f"otp:{payload.phone}"
+        # Must match the key AuthService.send_otp wrote, which is why both sides
+        # narrow through CanonicalPhone: a raw "0815…" here would look up a key
+        # that send_otp never created.
+        phone = CanonicalPhone(payload.phone)
+        redis_key = f"otp:{phone}"
         stored_otp = await self._redis.get(redis_key)
         if stored_otp is None:
-            raise OTPExpiredError(context={"phone": payload.phone[-4:]})
+            raise OTPExpiredError(context={"phone": phone[-4:]})
 
         if str(stored_otp) != payload.otp:
-            raise InvalidOTPError(context={"phone": payload.phone[-4:]})
+            raise InvalidOTPError(context={"phone": phone[-4:]})
 
-        await self._redis.delete(redis_key)
-
-        query = select(User).where(User.phone == payload.phone)
+        query = select(User).where(User.phone == phone)
         result = await self._db.execute(query)
         user = result.scalar_one_or_none()
         if user is None:
             raise UserNotFoundError(
                 detail="No account found with this phone number. Please register first.",
-                context={"phone": payload.phone[-4:]},
+                context={"phone": phone[-4:]},
             )
 
         if not user.is_active:
             raise InactiveUserError(context={"user_id": str(user.id)})
+
+        # Consume the code only once the account is known good. Deleting earlier
+        # destroyed a *correct* code for a user whose account was missing or
+        # inactive, forcing them to request another with no way to tell why.
+        # A matched-but-unredeemable code is harmless: it authenticates nobody,
+        # and it still expires on its own TTL.
+        await self._redis.delete(redis_key)
 
         logger.info("otp_verified", user_id=str(user.id), role=user.role)
         access_token = create_access_token(user.id, user.role, self._settings)
