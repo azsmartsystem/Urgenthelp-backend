@@ -8,8 +8,10 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.9
     hooks:
+      # No --fix: violations must fail the commit rather than silently rewriting
+      # the code. Run `uv run ruff check app/ --fix` yourself when you want the
+      # auto-fix, so the change is visible in the diff before it is staged.
       - id: ruff
-        args: ["--fix"]           # auto-fix safe issues
       - id: ruff-format           # format code (like black)
 
   # ── Mypy: strict type checking ────────────────────────────────────────────

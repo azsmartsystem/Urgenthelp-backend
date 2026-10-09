@@ -19,10 +19,6 @@
 *.sublime-project
 .cursor/
 
-# ── Old / replaced tooling (migrated from previous project) ──
-.husky/_/
-commitlint.config.js
-
 # ── PDFs / Docs (keep out of git) ────────────────────────────
 *.pdf
 
