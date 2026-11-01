@@ -1,3 +1,4 @@
+import uuid
 from typing import Literal
 
 from app.core.validators import NigerianPhone
@@ -44,3 +45,15 @@ class TokenResponse(AppBaseModel):
     access_token: str
     refresh_token: str
     token_type: Literal["Bearer"] = "Bearer"
+
+
+class RegisterResponse(AppBaseModel):
+    id: uuid.UUID
+    phone: NigerianPhone
+    full_name: str
+    role: Literal["customer", "helper", "admin"]
+    email: EmailStr | None = None
+    is_phone_verified: bool = False
+    message: str = (
+        "Registration successful. Please verify your phone number with the OTP sent to your phone."
+    )

@@ -479,7 +479,7 @@
 #### 🎯 Tasks 010
 
 - [ ] **Rate Limiting**
-  - [ ] OTP endpoints: 3 requests per phone per 10 minutes (Redis counter)
+  - [x] OTP endpoints: 3 requests per phone per 10 minutes (Redis counter)
   - [ ] Auth endpoints: 10 requests per IP per minute
   - [ ] Implement via FastAPI middleware using Redis
   - **Est. Time:** 4h | **Blocker?** ❌ None

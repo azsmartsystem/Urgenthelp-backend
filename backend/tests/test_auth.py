@@ -57,7 +57,7 @@ async def auth_client(
 async def test_api_register_success(
     auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
 ) -> None:
-    client, mock_db, _ = auth_client
+    client, mock_db, redis = auth_client
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_db.execute.return_value = mock_result
@@ -73,9 +73,17 @@ async def test_api_register_success(
     response = await client.post("/api/v1/auth/register", json=payload)
     assert response.status_code == 201
     data = response.json()
-    assert "access_token" in data
-    assert "refresh_token" in data
-    assert data["token_type"] == "Bearer"
+    assert "id" in data
+    assert data["phone"] == "2348011112222"
+    assert data["role"] == "customer"
+    assert data["full_name"] == "Test User"
+    assert data["email"] == "test@example.com"
+    assert data["is_phone_verified"] is False
+    assert "access_token" not in data
+    assert "refresh_token" not in data
+
+    stored_otp = await redis.get("otp:2348011112222")
+    assert stored_otp is not None
 
 
 @pytest.mark.asyncio
@@ -140,6 +148,7 @@ async def test_api_login_success(
         hashed_password=hash_password("StrongPassword123!"),
         role="customer",
         is_active=True,
+        is_phone_verified=True,
     )
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = user
@@ -158,6 +167,35 @@ async def test_api_login_success(
 
 
 @pytest.mark.asyncio
+async def test_api_login_unverified_phone_returns_403(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, _ = auth_client
+    user = User(
+        id=uuid.uuid4(),
+        phone="2348011112222",
+        full_name="Test User",
+        hashed_password=hash_password("StrongPassword123!"),
+        role="customer",
+        is_active=True,
+        is_phone_verified=False,
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute.return_value = mock_result
+
+    payload = {
+        "phone": "+2348011112222",
+        "password": "StrongPassword123!",
+    }
+
+    response = await client.post("/api/v1/auth/login", json=payload)
+    assert response.status_code == 403
+    data = response.json()
+    assert data["code"] == "AUTH_PHONE_NOT_VERIFIED"
+
+
+@pytest.mark.asyncio
 async def test_api_send_otp_success(
     auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
 ) -> None:
@@ -169,6 +207,47 @@ async def test_api_send_otp_success(
 
     stored_otp = await redis.get("otp:2348011112222")
     assert stored_otp is not None
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_cooldown_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, _ = auth_client
+    payload = {"phone": "08011112222"}
+
+    # First request succeeds
+    res1 = await client.post("/api/v1/auth/otp/send", json=payload)
+    assert res1.status_code == 204
+
+    # Second request immediately triggers cooldown
+    res2 = await client.post("/api/v1/auth/otp/send", json=payload)
+    assert res2.status_code == 429
+    data = res2.json()
+    assert data["code"] == "AUTH_OTP_COOLDOWN"
+    assert "Retry-After" in res2.headers
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_rate_limit_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    client, _, redis = auth_client
+    payload = {"phone": "08011112222"}
+    canonical = "2348011112222"
+
+    for _ in range(test_settings.OTP_MAX_REQUESTS_PER_WINDOW):
+        await redis.delete(f"otp:cooldown:{canonical}")
+        res = await client.post("/api/v1/auth/otp/send", json=payload)
+        assert res.status_code == 204
+
+    # Next attempt triggers rate limit even without deleting cooldown
+    res_limited = await client.post("/api/v1/auth/otp/send", json=payload)
+    assert res_limited.status_code == 429
+    data = res_limited.json()
+    assert data["code"] == "AUTH_OTP_RATE_LIMITED"
+    assert "Retry-After" in res_limited.headers
 
 
 @pytest.mark.asyncio
@@ -199,6 +278,9 @@ async def test_api_verify_otp_success(
     data = response.json()
     assert "access_token" in data
     assert "refresh_token" in data
+    assert user.is_phone_verified is True
+    assert user.phone_verified_at is not None
+    assert mock_db.commit.called
 
 
 @pytest.mark.asyncio
@@ -323,3 +405,63 @@ async def test_api_register_rejects_non_ascii_digits(
     assert response.status_code == 422, (
         f"registered a non-ASCII phone: {response.status_code} {response.text}"
     )
+
+
+@pytest.mark.asyncio
+async def test_api_full_registration_verification_login_flow(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    """Lifecycle: register (no tokens) -> login blocked (403) -> verify OTP -> login (200)."""
+    client, mock_db, redis = auth_client
+
+    # 1. Register: phone not taken, email not taken
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+    reg_payload = {
+        "phone": "+2348012345678",
+        "full_name": "Full Lifecycle User",
+        "password": "SecurePassword123!",
+        "role": "customer",
+    }
+    reg_res = await client.post("/api/v1/auth/register", json=reg_payload)
+    assert reg_res.status_code == 201
+    reg_data = reg_res.json()
+    assert reg_data["is_phone_verified"] is False
+    assert "access_token" not in reg_data
+
+    # Extract user created and OTP from redis
+    user_created = mock_db.add.call_args[0][0]
+    assert user_created.phone == "2348012345678"
+    assert not user_created.is_phone_verified
+
+    canonical_phone = "2348012345678"
+    otp = await redis.get(f"otp:{canonical_phone}")
+    assert otp is not None
+
+    # 2. Try password login before verification -> 403 Forbidden
+    mock_db.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=user_created)
+    )
+    login_payload = {
+        "phone": "+2348012345678",
+        "password": "SecurePassword123!",
+    }
+    login_fail_res = await client.post("/api/v1/auth/login", json=login_payload)
+    assert login_fail_res.status_code == 403
+    assert login_fail_res.json()["code"] == "AUTH_PHONE_NOT_VERIFIED"
+
+    # 3. Verify OTP -> 200 OK with tokens, user verified
+    verify_payload = {"phone": "08012345678", "otp": str(otp)}
+    verify_res = await client.post("/api/v1/auth/otp/verify", json=verify_payload)
+    assert verify_res.status_code == 200
+    verify_data = verify_res.json()
+    assert "access_token" in verify_data
+    assert "refresh_token" in verify_data
+    assert user_created.is_phone_verified is True
+    assert user_created.phone_verified_at is not None
+
+    # 4. Now password login succeeds -> 200 OK with tokens
+    login_success_res = await client.post("/api/v1/auth/login", json=login_payload)
+    assert login_success_res.status_code == 200
+    login_data = login_success_res.json()
+    assert "access_token" in login_data
+    assert "refresh_token" in login_data

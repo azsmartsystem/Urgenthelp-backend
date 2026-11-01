@@ -33,34 +33,38 @@ def configure_logging() -> None:
 
     if settings.is_production:
         # JSON output for log aggregation (Datadog, CloudWatch, etc.)
-        structlog_processors: list[structlog.types.Processor] = [
-            *shared_processors,
+        formatter_processors: list[structlog.types.Processor] = [
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.processors.dict_tracebacks,
             structlog.processors.JSONRenderer(),
         ]
     else:
         # Human-readable coloured output for local development
-        structlog_processors = [
-            *shared_processors,
-            structlog.dev.ConsoleRenderer(colors=True),
+        formatter_processors = [
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(
+                colors=True,
+                pad_level=False,
+                pad_event_to=0,
+            ),
         ]
 
     structlog.configure(
-        processors=structlog_processors,
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
-    # Route third-party stdlib logs (uvicorn, gunicorn, asyncpg) through the
+    # Route third-party stdlib logs (uvicorn, gunicorn, asyncpg, sqlalchemy) through the
     # same renderer so all output shares one format.
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=shared_processors,
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            structlog_processors[-1],
-        ],
+        processors=formatter_processors,
     )
 
     handler = logging.StreamHandler(sys.stdout)
@@ -71,8 +75,14 @@ def configure_logging() -> None:
     root_logger.addHandler(handler)
     root_logger.setLevel(log_level)
 
-    # Let uvicorn propagate to the root handler instead of its own default one.
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        uvicorn_logger = logging.getLogger(name)
-        uvicorn_logger.handlers.clear()
-        uvicorn_logger.propagate = True
+    # Let uvicorn & sqlalchemy propagate to the root handler instead of their own default ones.
+    for name in (
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "sqlalchemy.engine",
+        "sqlalchemy.engine.Engine",
+    ):
+        extra_logger = logging.getLogger(name)
+        extra_logger.handlers.clear()
+        extra_logger.propagate = True

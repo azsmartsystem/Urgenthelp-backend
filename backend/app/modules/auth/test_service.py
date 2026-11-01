@@ -13,8 +13,12 @@ from app.core.exceptions import (
     InvalidCredentialsError,
     InvalidOTPError,
     InvalidTokenError,
+    OTPCooldownError,
     OTPExpiredError,
+    OTPRateLimitError,
     PhoneAlreadyRegisteredError,
+    PhoneNotVerifiedError,
+    SMSDispatchError,
     UserNotFoundError,
 )
 from app.core.security import (
@@ -71,8 +75,8 @@ def auth_service(
 @pytest.mark.asyncio
 async def test_register_customer_success(
     auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
     mock_db: AsyncMock,
-    settings: Settings,
 ) -> None:
     # First query checks phone -> None, second checks email -> None
     mock_result = MagicMock()
@@ -87,23 +91,29 @@ async def test_register_customer_success(
         email="john@example.com",
     )
 
-    tokens = await auth_service.register(payload)
+    response = await auth_service.register(payload)
 
-    assert tokens.access_token is not None
-    assert tokens.refresh_token is not None
+    assert response.id is not None
+    assert response.phone == "2348012345678"
+    assert response.full_name == "John Doe"
+    assert response.role == "customer"
+    assert response.email == "john@example.com"
+    assert response.is_phone_verified is False
+    assert "verify" in response.message.lower()
     assert mock_db.add.called
     assert mock_db.commit.called
 
-    access_payload = decode_token(tokens.access_token, settings.JWT_ACCESS_SECRET)
-    assert access_payload.role == "customer"
-    assert access_payload.type == "access"
+    # Verify OTP was dispatched and stored in Redis
+    stored_otp = await fake_redis.get("otp:2348012345678")
+    assert stored_otp is not None
+    assert len(str(stored_otp)) == 6
 
 
 @pytest.mark.asyncio
 async def test_register_helper_without_email_success(
     auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
     mock_db: AsyncMock,
-    settings: Settings,
 ) -> None:
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
@@ -117,12 +127,86 @@ async def test_register_helper_without_email_success(
         email=None,
     )
 
-    tokens = await auth_service.register(payload)
+    response = await auth_service.register(payload)
 
-    assert tokens.access_token is not None
-    assert tokens.refresh_token is not None
-    access_payload = decode_token(tokens.access_token, settings.JWT_ACCESS_SECRET)
-    assert access_payload.role == "helper"
+    assert response.id is not None
+    assert response.phone == "2348087654321"
+    assert response.role == "helper"
+    assert response.is_phone_verified is False
+    assert mock_db.add.called
+    assert mock_db.commit.called
+
+    stored_otp = await fake_redis.get("otp:2348087654321")
+    assert stored_otp is not None
+
+
+@pytest.mark.asyncio
+async def test_register_send_otp_failure_rolls_back_db_transaction(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = mock_result
+
+    mock_notification_svc = AsyncMock()
+    mock_notification_svc.send_otp_sms.side_effect = SMSDispatchError(detail="SMS gateway failure")
+
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+        notification_service=mock_notification_svc,
+    )
+
+    payload = RegisterRequest(
+        phone="+2348012345678",
+        full_name="John Doe",
+        password="SecurePassword123!",
+        role="customer",
+    )
+
+    with pytest.raises(SMSDispatchError):
+        await service.register(payload)
+
+    assert mock_db.rollback.called
+    assert not mock_db.commit.called
+
+
+@pytest.mark.asyncio
+async def test_register_db_commit_failure_cleans_up_redis_keys(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = mock_result
+    mock_db.commit.side_effect = RuntimeError("DB connection dropped on commit")
+
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+    )
+
+    payload = RegisterRequest(
+        phone="+2348012345678",
+        full_name="John Doe",
+        password="SecurePassword123!",
+        role="customer",
+    )
+
+    with pytest.raises(RuntimeError):
+        await service.register(payload)
+
+    phone = "2348012345678"
+    assert mock_db.rollback.called
+    assert await fake_redis.get(f"otp:{phone}") is None
+    assert await fake_redis.get(f"otp:cooldown:{phone}") is None
+    rate = await fake_redis.get(f"otp:rate:{phone}")
+    assert rate is None or int(rate) == 0
 
 
 @pytest.mark.asyncio
@@ -190,6 +274,7 @@ async def test_login_success(
         hashed_password=hashed,
         role="customer",
         is_active=True,
+        is_phone_verified=True,
     )
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = user
@@ -201,6 +286,35 @@ async def test_login_success(
     assert tokens.access_token is not None
     access_payload = decode_token(tokens.access_token, settings.JWT_ACCESS_SECRET)
     assert access_payload.sub == str(user_id)
+
+
+@pytest.mark.asyncio
+async def test_login_unverified_phone_raises(
+    auth_service: AuthService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    hashed = hash_password("ValidPassword123!")
+    user = User(
+        id=user_id,
+        phone="+2348012345678",
+        full_name="John Doe",
+        hashed_password=hashed,
+        role="customer",
+        is_active=True,
+        is_phone_verified=False,
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute.return_value = mock_result
+
+    payload = LoginRequest(phone="+2348012345678", password="ValidPassword123!")
+
+    with pytest.raises(PhoneNotVerifiedError) as exc_info:
+        await auth_service.login(payload)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.code == "AUTH_PHONE_NOT_VERIFIED"
 
 
 @pytest.mark.asyncio
@@ -318,6 +432,7 @@ async def test_verify_otp_success(
         hashed_password="hash",
         role="customer",
         is_active=True,
+        is_phone_verified=False,
     )
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = user
@@ -327,8 +442,79 @@ async def test_verify_otp_success(
     tokens = await auth_service.verify_otp(payload)
 
     assert tokens.access_token is not None
+    assert user.is_phone_verified is True
+    assert user.phone_verified_at is not None
+    assert mock_db.commit.called
     # Verify OTP was deleted from redis
     assert await fake_redis.get(f"otp:{phone}") is None
+
+
+@pytest.mark.asyncio
+async def test_verify_otp_already_verified_user(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    mock_db: AsyncMock,
+) -> None:
+    from datetime import UTC, datetime
+
+    phone = "2348012345678"
+    otp = "123456"
+    await fake_redis.set(f"otp:{phone}", otp)
+
+    verified_at = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone=phone,
+        full_name="John Doe",
+        hashed_password="hash",
+        role="customer",
+        is_active=True,
+        is_phone_verified=True,
+        phone_verified_at=verified_at,
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute.return_value = mock_result
+
+    payload = OTPVerifyRequest(phone=phone, otp=otp)
+    tokens = await auth_service.verify_otp(payload)
+
+    assert tokens.access_token is not None
+    assert user.is_phone_verified is True
+    assert user.phone_verified_at == verified_at
+
+
+@pytest.mark.asyncio
+async def test_verify_otp_db_commit_failure_preserves_otp_in_redis(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    mock_db: AsyncMock,
+) -> None:
+    phone = "2348012345678"
+    otp = "123456"
+    await fake_redis.set(f"otp:{phone}", otp)
+
+    user = User(
+        id=uuid.uuid4(),
+        phone=phone,
+        full_name="John Doe",
+        hashed_password="hash",
+        role="customer",
+        is_active=True,
+        is_phone_verified=False,
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute.return_value = mock_result
+    mock_db.commit.side_effect = RuntimeError("DB commit failed")
+
+    payload = OTPVerifyRequest(phone=phone, otp=otp)
+    with pytest.raises(RuntimeError):
+        await auth_service.verify_otp(payload)
+
+    # OTP must still exist in Redis so the user can retry
+    assert await fake_redis.get(f"otp:{phone}") == otp
 
 
 @pytest.mark.asyncio
@@ -435,6 +621,7 @@ def _active_user(phone: str = CANONICAL_PHONE) -> User:
         hashed_password="hash",
         role="customer",
         is_active=True,
+        is_phone_verified=True,
     )
 
 
@@ -508,6 +695,7 @@ async def test_send_otp_value_is_a_six_digit_number(
     off-by-one, not a single unlucky call.
     """
     for _ in range(25):
+        await fake_redis.flushdb()
         await _send_otp_like_router(auth_service, "08153551975")
         stored = await fake_redis.get(f"otp:{CANONICAL_PHONE}")
         assert stored is not None
@@ -705,6 +893,7 @@ async def test_register_stores_and_looks_up_the_canonical_phone(
     stored_user = mock_db.add.call_args[0][0]
     assert isinstance(stored_user, User)
     assert stored_user.phone == CANONICAL_PHONE
+    assert stored_user.is_phone_verified is False
 
     statement = mock_db.execute.call_args_list[0][0][0]
     assert list(dict(statement.compile().params).values()) == [CANONICAL_PHONE]
@@ -723,6 +912,7 @@ async def test_login_looks_up_the_canonical_phone(
         hashed_password=hash_password("ValidPassword123!"),
         role="customer",
         is_active=True,
+        is_phone_verified=True,
     )
     mock_db.execute.return_value = _db_returning(user)
 
@@ -902,3 +1092,171 @@ def test_require_role_forbidden_raises(settings: Settings) -> None:
     check_admin = require_role("admin")
     with pytest.raises(ForbiddenError):
         check_admin(payload)
+
+
+@pytest.mark.asyncio
+async def test_send_otp_failure_rolls_back_redis_key(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    mock_notification_svc = AsyncMock()
+    mock_notification_svc.send_otp_sms.side_effect = SMSDispatchError(detail="SMS gateway failure")
+
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+        notification_service=mock_notification_svc,
+    )
+
+    phone = CanonicalPhone("2348153551975")
+    with pytest.raises(SMSDispatchError):
+        await service.send_otp(phone)
+
+    # Redis key must be purged so no orphaned un-sent OTP remains
+    assert await fake_redis.get(f"otp:{phone}") is None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_calls_notification_service(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    mock_notification_svc = AsyncMock()
+
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+        notification_service=mock_notification_svc,
+    )
+
+    phone = CanonicalPhone("2348153551975")
+    await service.send_otp(phone)
+
+    mock_notification_svc.send_otp_sms.assert_awaited_once()
+    stored_otp = await fake_redis.get(f"otp:{phone}")
+    assert stored_otp is not None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_cooldown_raises_when_requested_too_soon(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    phone = CanonicalPhone("2348153551975")
+    await auth_service.send_otp(phone)
+
+    with pytest.raises(OTPCooldownError) as exc_info:
+        await auth_service.send_otp(phone)
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.code == "AUTH_OTP_COOLDOWN"
+    assert "retry_after" in exc_info.value.context
+
+
+@pytest.mark.asyncio
+async def test_send_otp_cooldown_allows_request_after_expiry(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    phone = CanonicalPhone("2348153551975")
+    await auth_service.send_otp(phone)
+
+    await fake_redis.delete(f"otp:cooldown:{phone}")
+
+    await auth_service.send_otp(phone)
+    assert await fake_redis.get(f"otp:{phone}") is not None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_rate_limit_raises_when_exceeding_max_requests(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    phone = CanonicalPhone("2348153551975")
+
+    for _ in range(settings.OTP_MAX_REQUESTS_PER_WINDOW):
+        await fake_redis.delete(f"otp:cooldown:{phone}")
+        await auth_service.send_otp(phone)
+
+    await fake_redis.delete(f"otp:cooldown:{phone}")
+    with pytest.raises(OTPRateLimitError) as exc_info:
+        await auth_service.send_otp(phone)
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.code == "AUTH_OTP_RATE_LIMITED"
+    assert "retry_after" in exc_info.value.context
+
+
+@pytest.mark.asyncio
+async def test_send_otp_rate_limit_not_masked_by_cooldown_within_60s(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    phone = CanonicalPhone("2348153551975")
+
+    for _ in range(settings.OTP_MAX_REQUESTS_PER_WINDOW):
+        await fake_redis.delete(f"otp:cooldown:{phone}")
+        await auth_service.send_otp(phone)
+
+    # Rate limit has been reached. Calling send_otp without deleting cooldown
+    # must trigger OTPRateLimitError (not masked by OTPCooldownError).
+    with pytest.raises(OTPRateLimitError) as exc_info:
+        await auth_service.send_otp(phone)
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.code == "AUTH_OTP_RATE_LIMITED"
+
+
+@pytest.mark.asyncio
+async def test_send_otp_rate_limit_exceeded_post_increment_deletes_cooldown(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    phone = CanonicalPhone("2348153551975")
+    with patch.object(
+        fake_redis,
+        "incr",
+        new_callable=AsyncMock,
+        return_value=settings.OTP_MAX_REQUESTS_PER_WINDOW + 1,
+    ):
+        with pytest.raises(OTPRateLimitError) as exc_info:
+            await auth_service.send_otp(phone)
+
+        assert exc_info.value.code == "AUTH_OTP_RATE_LIMITED"
+        assert await fake_redis.get(f"otp:cooldown:{phone}") is None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_failure_decrements_rate_limit_counter(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    mock_notification_svc = AsyncMock()
+    mock_notification_svc.send_otp_sms.side_effect = SMSDispatchError(
+        detail="SMS network error", context={}
+    )
+
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+        notification_service=mock_notification_svc,
+    )
+
+    phone = CanonicalPhone("2348153551975")
+    with pytest.raises(SMSDispatchError):
+        await service.send_otp(phone)
+
+    counter = await fake_redis.get(f"otp:rate:{phone}")
+    assert counter is None or int(counter) == 0
+    assert await fake_redis.get(f"otp:cooldown:{phone}") is None

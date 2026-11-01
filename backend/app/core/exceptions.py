@@ -58,6 +58,20 @@ class OTPExpiredError(UrgentHelpError):
 
 
 @dataclass
+class OTPCooldownError(UrgentHelpError):
+    code: str = "AUTH_OTP_COOLDOWN"
+    detail: str = "Please wait before requesting another OTP."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+@dataclass
+class OTPRateLimitError(UrgentHelpError):
+    code: str = "AUTH_OTP_RATE_LIMITED"
+    detail: str = "Too many OTP requests. Please try again later."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+@dataclass
 class InvalidOTPError(UrgentHelpError):
     code: str = "AUTH_INVALID_OTP"
     detail: str = "The OTP entered is incorrect."
@@ -82,6 +96,13 @@ class EmailAlreadyRegisteredError(UrgentHelpError):
 class InactiveUserError(UrgentHelpError):
     code: str = "AUTH_USER_INACTIVE"
     detail: str = "This account has been deactivated or suspended."
+    status_code: int = status.HTTP_403_FORBIDDEN
+
+
+@dataclass
+class PhoneNotVerifiedError(UrgentHelpError):
+    code: str = "AUTH_PHONE_NOT_VERIFIED"
+    detail: str = "Phone number is not verified. Please verify your phone number via OTP."
     status_code: int = status.HTTP_403_FORBIDDEN
 
 
@@ -181,6 +202,13 @@ class ExternalServiceError(UrgentHelpError):
     status_code: int = status.HTTP_502_BAD_GATEWAY
 
 
+@dataclass
+class SMSDispatchError(ExternalServiceError):
+    code: str = "SMS_DISPATCH_FAILED"
+    detail: str = "Failed to dispatch SMS notification. Please try again."
+    status_code: int = status.HTTP_502_BAD_GATEWAY
+
+
 # ─── Global Exception Handler Registration ────────────────────────────────────
 
 
@@ -196,6 +224,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             path=str(request.url),
             context=exc.context,
         )
+        headers: dict[str, str] = {}
+        if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS and "retry_after" in exc.context:
+            headers["Retry-After"] = str(exc.context["retry_after"])
+
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -203,6 +235,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "detail": exc.detail,
                 "path": str(request.url.path),
             },
+            headers=headers if headers else None,
         )
 
     @app.exception_handler(Exception)

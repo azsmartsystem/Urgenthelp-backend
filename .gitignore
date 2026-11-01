@@ -109,3 +109,8 @@ PAYMENT_OPERATIONS_REPORT.md
 .venv
 .opencode
 typings/
+notes.md
+.claude
+.agents
+.agent
+_bmad**

@@ -11,6 +11,7 @@ from app.modules.auth.schemas import (
     OTPVerifyRequest,
     RefreshTokenRequest,
     RegisterRequest,
+    RegisterResponse,
     SendOTPRequest,
     TokenResponse,
 )
@@ -28,11 +29,11 @@ def _get_service(
     return AuthService(db=db, redis_client=redis_client)
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
+@router.post("/register", response_model=RegisterResponse, status_code=201)
 async def register(
     payload: RegisterRequest,
     service: Annotated[AuthService, Depends(_get_service)],
-) -> TokenResponse:
+) -> RegisterResponse:
     """Register a new customer or helper account."""
     return await service.register(payload)
 

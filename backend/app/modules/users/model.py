@@ -10,7 +10,7 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # whenever this module is imported without app.modules.bookings.model. Passing
 # the real column object needs no registry lookup.
 from app.modules.bookings.model import Booking
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -43,6 +43,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_id_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_phone_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    phone_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     trust_score: Mapped[float] = mapped_column(default=50.0, nullable=False)
 

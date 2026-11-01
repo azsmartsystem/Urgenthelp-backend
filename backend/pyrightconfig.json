@@ -1,0 +1,8 @@
+{
+  "include": ["app", "tests"],
+  "exclude": ["**/node_modules", "alembic"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["."],
+  "reportMissingTypeStubs": "none"
+}

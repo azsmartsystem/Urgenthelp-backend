@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_EXPIRE_MINUTES: int = Field(default=30, ge=5)
     JWT_REFRESH_EXPIRE_DAYS: int = Field(default=30, ge=1)
     OTP_EXPIRE_MINUTES: int = Field(default=10, ge=1)
+    OTP_COOLDOWN_SECONDS: int = Field(default=60, ge=1)
+    OTP_MAX_REQUESTS_PER_WINDOW: int = Field(default=3, ge=1)
+    OTP_RATE_LIMIT_WINDOW_MINUTES: int = Field(default=10, ge=1)
 
     # ── CORS / Hosts ──────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] | str = []
@@ -71,6 +74,18 @@ class Settings(BaseSettings):
     EMAIL_FROM_ADDRESS: str = "no-reply@UrgentHelp.com"
     EMAIL_VERIFICATION_EXPIRE_HOURS: int = Field(default=24, ge=1)
     PASSWORD_RESET_EXPIRE_MINUTES: int = Field(default=30, ge=5, le=120)
+
+    # ── SMS / Multi-Provider (Termii, Twilio, Mock) ───────────────────────────
+    SMS_PROVIDER: Literal["termii", "twilio", "mock"] = "termii"
+    # Termii
+    TERMII_API_KEY: str | None = None
+    TERMII_SENDER_ID: str = "UrgentHelp"
+    TERMII_BASE_URL: AnyHttpUrl = AnyHttpUrl("https://api.ng.termii.com")
+    TERMII_CHANNEL: Literal["generic", "dnd", "whatsapp"] = "dnd"
+    # Twilio
+    TWILIO_ACCOUNT_SID: str | None = None
+    TWILIO_AUTH_TOKEN: str | None = None
+    TWILIO_FROM_NUMBER: str | None = None
 
     # ── Sentry ────────────────────────────────────────────────────────────────
     SENTRY_DSN: str | None = None
