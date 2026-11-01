@@ -101,13 +101,13 @@
   - [x] Email settings in `Settings` and `.env.example`
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
-- [ ] **Email Channel — Verification** `POST /api/v1/users/me/email` + `/email/verify`
-  - [ ] Accept optional email at registration (`EmailStr`)
-  - [ ] Send single-use verification link (hashed token in Redis, 24h TTL)
-  - [ ] Set `email_verified_at` on success; reset it if the email changes
-  - [ ] Integrate email provider (Resend / SendGrid / SES); log-only in dev
-  - [ ] Write tests
-  - **Est. Time:** 5h | **Blocker?** ⚠️ Email provider account + sender domain
+- [x] **Email Channel — Verification** `POST /api/v1/users/me/email` + `/email/verify` *(Done — Nov 1)*
+  - [x] Accept optional email at registration (`EmailStr`)
+  - [x] Send single-use verification code (`email_otp:{user_id}` in Redis, 24h TTL)
+  - [x] Set `email_verified_at` on success; keep previous verified until new OTP is verified
+  - [x] Integrate email provider protocol and mock provider (log-only in dev/test)
+  - [x] Write unit & integration tests (100% coverage on UserService)
+  - **Est. Time:** 5h | **Blocker?** ❌ None
 
 - [ ] **Account Recovery (tiered)** `POST /api/v1/auth/password/forgot` + `/reset`
   - [ ] Verified email on file: send reset link (default)

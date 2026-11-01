@@ -93,6 +93,34 @@ class EmailAlreadyRegisteredError(UrgentHelpError):
 
 
 @dataclass
+class EmailOTPExpiredError(UrgentHelpError):
+    code: str = "AUTH_EMAIL_OTP_EXPIRED"
+    detail: str = "The email verification code has expired. Please request a new one."
+    status_code: int = status.HTTP_401_UNAUTHORIZED
+
+
+@dataclass
+class InvalidEmailOTPError(UrgentHelpError):
+    code: str = "AUTH_INVALID_EMAIL_OTP"
+    detail: str = "The email verification code is incorrect."
+    status_code: int = status.HTTP_400_BAD_REQUEST
+
+
+@dataclass
+class EmailCooldownError(UrgentHelpError):
+    code: str = "AUTH_EMAIL_COOLDOWN"
+    detail: str = "Please wait before requesting another email verification code."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+@dataclass
+class EmailRateLimitError(UrgentHelpError):
+    code: str = "AUTH_EMAIL_RATE_LIMITED"
+    detail: str = "Too many email verification requests. Please try again later."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+@dataclass
 class InactiveUserError(UrgentHelpError):
     code: str = "AUTH_USER_INACTIVE"
     detail: str = "This account has been deactivated or suspended."
@@ -206,6 +234,13 @@ class ExternalServiceError(UrgentHelpError):
 class SMSDispatchError(ExternalServiceError):
     code: str = "SMS_DISPATCH_FAILED"
     detail: str = "Failed to dispatch SMS notification. Please try again."
+    status_code: int = status.HTTP_502_BAD_GATEWAY
+
+
+@dataclass
+class EmailDispatchError(ExternalServiceError):
+    code: str = "EMAIL_DISPATCH_FAILED"
+    detail: str = "Failed to dispatch verification email. Please try again."
     status_code: int = status.HTTP_502_BAD_GATEWAY
 
 

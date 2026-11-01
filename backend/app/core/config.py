@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     EMAIL_FROM_ADDRESS: str = "no-reply@UrgentHelp.com"
     EMAIL_VERIFICATION_EXPIRE_HOURS: int = Field(default=24, ge=1)
     PASSWORD_RESET_EXPIRE_MINUTES: int = Field(default=30, ge=5, le=120)
+    EMAIL_COOLDOWN_SECONDS: int = Field(default=60, ge=1)
+    EMAIL_MAX_REQUESTS_PER_WINDOW: int = Field(default=3, ge=1)
+    EMAIL_RATE_LIMIT_WINDOW_MINUTES: int = Field(default=10, ge=1)
 
     # ── SMS / Multi-Provider (Termii, Twilio, Mock) ───────────────────────────
     SMS_PROVIDER: Literal["termii", "twilio", "mock"] = "termii"

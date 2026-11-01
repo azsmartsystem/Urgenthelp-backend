@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from app.core.config import Settings, get_settings
-from app.core.exceptions import SMSDispatchError
+from app.core.exceptions import EmailDispatchError, SMSDispatchError
 from app.core.validators import CanonicalPhone
+from app.modules.notifications.email import (
+    MockEmailProvider,
+    get_email_provider,
+)
 from app.modules.notifications.service import NotificationService
 from app.modules.notifications.sms import (
     MockSMSProvider,
@@ -258,3 +262,97 @@ def test_get_sms_provider_unsupported(settings: Settings) -> None:
     s = settings.model_copy(update={"SMS_PROVIDER": cast(object, "unsupported_vendor")})
     with pytest.raises(ValueError):
         get_sms_provider(s)
+
+
+# ─── Email Provider Tests ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_verification_email_success() -> None:
+    mock_email = MockEmailProvider()
+    service = NotificationService(email_provider=mock_email)
+    await service.send_verification_email(
+        to="user@example.com",
+        otp="654321",
+        expire_hours=24,
+    )
+    assert len(mock_email.sent_emails) == 1
+    sent = mock_email.sent_emails[0]
+    assert sent["to"] == "user@example.com"
+    assert "654321" in str(sent["body"])
+    assert "24 hours" in str(sent["body"])
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_verification_email_wraps_exception() -> None:
+    failing_provider = AsyncMock()
+    failing_provider.send_email.side_effect = RuntimeError("SMTP connection failed")
+    service = NotificationService(email_provider=failing_provider)
+
+    with pytest.raises(EmailDispatchError) as exc_info:
+        await service.send_verification_email(
+            to="user@example.com",
+            otp="654321",
+            expire_hours=24,
+        )
+    assert exc_info.value.code == "EMAIL_DISPATCH_FAILED"
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_verification_email_re_raises_dispatch_error() -> None:
+    failing_provider = AsyncMock()
+    failing_provider.send_email.side_effect = EmailDispatchError()
+    service = NotificationService(email_provider=failing_provider)
+
+    with pytest.raises(EmailDispatchError):
+        await service.send_verification_email(
+            to="user@example.com",
+            otp="654321",
+            expire_hours=24,
+        )
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_verification_email_production_logging() -> None:
+    from unittest.mock import patch
+
+    with patch.dict("os.environ", {"ENVIRONMENT": "production"}):
+        prod_settings = Settings()
+
+    mock_email = MockEmailProvider()
+    service = NotificationService(email_provider=mock_email, settings=prod_settings)
+    await service.send_verification_email(
+        to="user@example.com",
+        otp="123456",
+        expire_hours=24,
+    )
+    assert len(mock_email.sent_emails) == 1
+
+    # Also test error logging in production
+    failing = AsyncMock()
+    failing.send_email.side_effect = RuntimeError("network glitch")
+    fail_service = NotificationService(email_provider=failing, settings=prod_settings)
+    with pytest.raises(EmailDispatchError):
+        await fail_service.send_verification_email(
+            to="invalid",
+            otp="123456",
+            expire_hours=24,
+        )
+
+
+def test_get_email_provider(settings: Settings) -> None:
+    provider = get_email_provider(settings)
+    assert isinstance(provider, MockEmailProvider)
+
+    # In dev with no api key
+    s_dev = settings.model_copy(
+        update={"EMAIL_PROVIDER_API_KEY": None, "ENVIRONMENT": "development"}
+    )
+    assert isinstance(get_email_provider(s_dev), MockEmailProvider)
+
+    # In prod with api key
+    s_prod = settings.model_copy(
+        update={"EMAIL_PROVIDER_API_KEY": "resend_123", "ENVIRONMENT": "production"}
+    )
+    assert isinstance(get_email_provider(s_prod), MockEmailProvider)
