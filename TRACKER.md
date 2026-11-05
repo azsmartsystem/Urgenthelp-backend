@@ -109,16 +109,16 @@
   - [x] Write unit & integration tests (100% coverage on UserService)
   - **Est. Time:** 5h | **Blocker?** ❌ None
 
-- [ ] **Account Recovery (tiered)** `POST /api/v1/auth/password/forgot` + `/reset`
-  - [ ] Verified email on file: send reset link (default)
-  - [ ] No verified email: SMS OTP to registered phone (fallback)
-  - [ ] Neither available: manual admin recovery via ID verification
-  - [ ] Identical response whether or not the account exists (no enumeration)
-  - [ ] Single-use random token, hash stored in Redis, 30 min TTL (not a JWT)
-  - [ ] Revoke all refresh tokens after a successful reset
-  - [ ] Rate limit per phone, email and IP
-  - [ ] Write tests
-  - **Est. Time:** 6h | **Blocker?** ⚠️ Depends on OTP + email verification tasks
+- [x] **Account Recovery (tiered)** `POST /api/v1/auth/password/forgot` + `/reset` *(Done — Nov 5)*
+  - [x] Verified email on file: send reset link (default)
+  - [x] No verified email: SMS OTP to registered phone (fallback)
+  - [x] Neither available: manual admin recovery via ID verification
+  - [x] Identical response whether or not the account exists (no enumeration)
+  - [x] Single-use random token, hash stored in Redis, 30 min TTL (not a JWT)
+  - [x] Revoke all refresh tokens after a successful reset
+  - [x] Rate limit per phone, email and IP
+  - [x] Write tests
+  - **Est. Time:** 6h | **Blocker?** ❌ None
 
 - [ ] **Notification Preferences** `GET/PUT /api/v1/notifications/preferences`
   - [ ] List and update per-channel, per-event opt-ins

@@ -68,3 +68,45 @@ class NotificationService:
                 detail="Failed to dispatch verification email. Please try again.",
                 context={"email": logged_email, "error": str(exc)},
             ) from exc
+
+    async def send_password_reset_email(
+        self,
+        to: str,
+        token: str,
+        expire_minutes: int,
+    ) -> None:
+        """Format and dispatch password reset link/token to the recipient."""
+        subject = "Reset your UrgentHelp password"
+        body = (
+            f"Use the following token to reset your password: {token}. "
+            f"This link/token is valid for {expire_minutes} minutes."
+        )
+        logged_email = _mask_email(to) if self._settings.is_production else to
+        try:
+            await self._email_provider.send_email(
+                to=to,
+                subject=subject,
+                body=body,
+            )
+            logger.info("password_reset_email_sent", email=logged_email)
+        except EmailDispatchError:
+            raise
+        except Exception as exc:
+            logger.error("password_reset_email_failed", email=logged_email, error=str(exc))
+            raise EmailDispatchError(
+                detail="Failed to dispatch password reset email. Please try again.",
+                context={"email": logged_email, "error": str(exc)},
+            ) from exc
+
+    async def send_password_reset_sms(
+        self,
+        to: CanonicalPhone,
+        otp: str,
+        expire_minutes: int,
+    ) -> None:
+        """Format and dispatch password reset SMS OTP to the recipient."""
+        message = (
+            f"Your UrgentHelp password reset code is {otp}. Valid for {expire_minutes} minutes."
+        )
+        await self._sms_provider.send_sms(to=to, message=message)
+        logger.info("password_reset_sms_sent", phone=f"...{to[-4:]}")

@@ -134,6 +134,27 @@ class PhoneNotVerifiedError(UrgentHelpError):
     status_code: int = status.HTTP_403_FORBIDDEN
 
 
+@dataclass
+class InvalidPasswordResetTokenError(UrgentHelpError):
+    code: str = "AUTH_INVALID_RESET_TOKEN"
+    detail: str = "The password reset token is invalid or has expired."
+    status_code: int = status.HTTP_400_BAD_REQUEST
+
+
+@dataclass
+class PasswordResetCooldownError(UrgentHelpError):
+    code: str = "AUTH_PASSWORD_RESET_COOLDOWN"
+    detail: str = "Please wait before requesting another password reset."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+@dataclass
+class PasswordResetRateLimitError(UrgentHelpError):
+    code: str = "AUTH_PASSWORD_RESET_RATE_LIMITED"
+    detail: str = "Too many password reset requests. Please try again later."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
 # ─── Users / Helpers ──────────────────────────────────────────────────────────
 
 

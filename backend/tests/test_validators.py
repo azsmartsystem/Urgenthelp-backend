@@ -150,7 +150,7 @@ def test_every_phone_field_uses_the_normalizing_type() -> None:
     import ast
     import pathlib
 
-    allowed = {"NigerianPhone", "CanonicalPhone"}
+    allowed = {"NigerianPhone", "CanonicalPhone", "NigerianPhone | None"}
     offenders: list[str] = []
     schemas_dir = pathlib.Path(__file__).resolve().parents[1] / "app" / "modules"
 

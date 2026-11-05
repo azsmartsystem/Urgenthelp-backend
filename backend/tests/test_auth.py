@@ -1,7 +1,9 @@
 """Integration tests for Auth API endpoints."""
 
+import hashlib
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis.aioredis
@@ -465,3 +467,359 @@ async def test_api_full_registration_verification_login_flow(
     login_data = login_success_res.json()
     assert "access_token" in login_data
     assert "refresh_token" in login_data
+
+
+# ─── Forgot and Reset Password Integration Tests ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_tier1_verified_email(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone="2348011112222",
+        email="verified@example.com",
+        email_verified_at=datetime.now(UTC),
+        full_name="Verified User",
+        hashed_password=hash_password("StrongPassword123!"),
+        role="customer",
+        is_active=True,
+    )
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=user))
+
+    payload = {"phone": "08011112222"}
+    response = await client.post("/api/v1/auth/password/forgot", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "instructions have been sent" in data["message"]
+
+    keys = await redis.keys("pwd_reset:token:*")
+    assert len(keys) == 1
+    assert await redis.get(keys[0]) == str(user_id)
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_tier2_unverified_email_sms_otp(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone="2348011112222",
+        email="unverified@example.com",
+        email_verified_at=None,
+        full_name="Unverified User",
+        hashed_password=hash_password("StrongPassword123!"),
+        role="customer",
+        is_active=True,
+    )
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=user))
+
+    payload = {"phone": "08011112222"}
+    response = await client.post("/api/v1/auth/password/forgot", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "instructions have been sent" in data["message"]
+
+    keys = await redis.keys("pwd_reset:token:*")
+    assert len(keys) >= 1
+    stored_vals = [await redis.get(k) for k in keys]
+    assert str(user_id) in stored_vals
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_non_existent_account_returns_200(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, _ = auth_client
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+
+    payload = {"phone": "08099999999"}
+    response = await client.post("/api/v1/auth/password/forgot", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "instructions have been sent" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_cooldown_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, _ = auth_client
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+
+    payload = {"phone": "08011112222"}
+    res1 = await client.post("/api/v1/auth/password/forgot", json=payload)
+    assert res1.status_code == 200
+
+    res2 = await client.post("/api/v1/auth/password/forgot", json=payload)
+    assert res2.status_code == 429
+    data = res2.json()
+    assert data["code"] == "AUTH_PASSWORD_RESET_COOLDOWN"
+    assert "Retry-After" in res2.headers
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_rate_limit_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+
+    canonical = "2348011112222"
+    payload = {"phone": "08011112222"}
+
+    for _ in range(3):
+        await redis.delete(f"pwd_reset:cooldown:{canonical}")
+        res = await client.post("/api/v1/auth/password/forgot", json=payload)
+        assert res.status_code == 200
+
+    res_limited = await client.post("/api/v1/auth/password/forgot", json=payload)
+    assert res_limited.status_code == 429
+    data = res_limited.json()
+    assert data["code"] == "AUTH_PASSWORD_RESET_RATE_LIMITED"
+    assert "Retry-After" in res_limited.headers
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_ip_rate_limit_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+
+    for i in range(10):
+        phone = f"0801111222{i}"
+        canonical = f"234801111222{i}"
+        await redis.delete(f"pwd_reset:cooldown:{canonical}")
+        res = await client.post("/api/v1/auth/password/forgot", json={"phone": phone})
+        assert res.status_code == 200
+
+    res_ip = await client.post("/api/v1/auth/password/forgot", json={"phone": "08011112230"})
+    assert res_ip.status_code == 429
+    assert res_ip.json()["code"] == "AUTH_PASSWORD_RESET_RATE_LIMITED"
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_forwarded_ip_rate_limit_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+    forwarded_headers = {"x-forwarded-for": "203.0.113.195, 70.41.3.18"}
+
+    for i in range(10):
+        phone = f"0801111222{i}"
+        canonical = f"234801111222{i}"
+        await redis.delete(f"pwd_reset:cooldown:{canonical}")
+        res = await client.post(
+            "/api/v1/auth/password/forgot",
+            json={"phone": phone},
+            headers=forwarded_headers,
+        )
+        assert res.status_code == 200
+
+    res_forwarded = await client.post(
+        "/api/v1/auth/password/forgot",
+        json={"phone": "08011112230"},
+        headers=forwarded_headers,
+    )
+    assert res_forwarded.status_code == 429
+    assert res_forwarded.json()["code"] == "AUTH_PASSWORD_RESET_RATE_LIMITED"
+
+    # Also test whitespace X-Forwarded-For falls back to client host gracefully
+    await redis.delete("pwd_reset:cooldown:2348011112231")
+    res_whitespace = await client.post(
+        "/api/v1/auth/password/forgot",
+        json={"phone": "08011112231"},
+        headers={"x-forwarded-for": "   "},
+    )
+    assert res_whitespace.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_forgot_password_rejects_empty_and_invalid_inputs(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, _ = auth_client
+
+    # Empty payload
+    res_empty = await client.post("/api/v1/auth/password/forgot", json={})
+    assert res_empty.status_code == 422
+
+    # Malformed phone
+    res_bad_phone = await client.post("/api/v1/auth/password/forgot", json={"phone": "not_a_phone"})
+    assert res_bad_phone.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_api_reset_password_success_flow(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    client, mock_db, redis = auth_client
+    user_id = uuid.uuid4()
+    old_password = "OldPassword123!"
+    new_password = "BrandNewPassword123!"
+
+    user = User(
+        id=user_id,
+        phone="2348011112222",
+        full_name="Reset User",
+        hashed_password=hash_password(old_password),
+        role="customer",
+        is_active=True,
+        is_phone_verified=True,
+    )
+    mock_db.get.return_value = user
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=user))
+
+    # Issue refresh token before reset
+    old_refresh_token = create_refresh_token(
+        user_id,
+        "customer",
+        test_settings,
+        issued_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+
+    # Put reset token in redis
+    raw_token = "secret_reset_token_abc"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    await redis.set(f"pwd_reset:token:{token_hash}", str(user_id))
+
+    # 1. Reset password
+    reset_res = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"token": raw_token, "new_password": new_password},
+    )
+    assert reset_res.status_code == 200
+    assert reset_res.json()["message"] == "Password has been reset successfully."
+
+    # Token must be deleted
+    assert await redis.get(f"pwd_reset:token:{token_hash}") is None
+
+    # 2. Prior refresh token is now revoked
+    refresh_fail_res = await client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+    assert refresh_fail_res.status_code == 401
+    assert "revoked" in refresh_fail_res.json()["detail"].lower()
+
+    # 3. Old password cannot login
+    login_fail_res = await client.post(
+        "/api/v1/auth/login",
+        json={"phone": "08011112222", "password": old_password},
+    )
+    assert login_fail_res.status_code == 401
+
+    # 4. New password can login
+    login_ok_res = await client.post(
+        "/api/v1/auth/login",
+        json={"phone": "08011112222", "password": new_password},
+    )
+    assert login_ok_res.status_code == 200
+    new_refresh = login_ok_res.json()["refresh_token"]
+
+    # 5. New refresh token works
+    refresh_ok_res = await client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": new_refresh},
+    )
+    assert refresh_ok_res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_reset_password_invalid_token_returns_400(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, _ = auth_client
+
+    response = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"token": "expired_or_invalid_token", "new_password": "NewPassword123!"},
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "AUTH_INVALID_RESET_TOKEN"
+
+
+@pytest.mark.asyncio
+async def test_api_reset_password_weak_password_returns_422(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, _ = auth_client
+
+    # Lacks uppercase
+    res1 = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"token": "token123", "new_password": "lowercaseonly123"},
+    )
+    assert res1.status_code == 422
+
+    # Lacks digit
+    res2 = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"token": "token123", "new_password": "NoDigitsInHere!"},
+    )
+    assert res2.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_api_reset_password_brute_force_lockout_returns_429(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, _ = auth_client
+
+    for _ in range(5):
+        res = await client.post(
+            "/api/v1/auth/password/reset",
+            json={"token": "invalid_token", "new_password": "NewPassword123!"},
+        )
+        assert res.status_code == 400
+
+    # 6th attempt is locked out
+    res_lockout = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"token": "invalid_token", "new_password": "NewPassword123!"},
+    )
+    assert res_lockout.status_code == 429
+    assert res_lockout.json()["code"] == "AUTH_PASSWORD_RESET_RATE_LIMITED"
+
+
+@pytest.mark.asyncio
+async def test_api_reset_password_strips_token_whitespace_and_scoped_phone(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone="2348011112222",
+        full_name="Reset User",
+        hashed_password=hash_password("OldPassword123!"),
+        role="customer",
+        is_active=True,
+        is_phone_verified=True,
+    )
+    mock_db.get.return_value = user
+
+    raw_token = "secret_reset_token_with_spaces"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    # Store with phone-scoped key
+    await redis.set(f"pwd_reset:token:2348011112222:{token_hash}", str(user_id))
+
+    # Reset with leading/trailing whitespace in token and matching phone
+    reset_res = await client.post(
+        "/api/v1/auth/password/reset",
+        json={
+            "token": f"  {raw_token}  ",
+            "phone": "08011112222",
+            "new_password": "NewStrongPassword123!",
+        },
+    )
+    assert reset_res.status_code == 200
+    assert reset_res.json()["message"] == "Password has been reset successfully."

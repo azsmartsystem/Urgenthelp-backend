@@ -1,9 +1,9 @@
 import uuid
-from typing import Literal
+from typing import Literal, Self
 
 from app.core.validators import NigerianPhone
 from app.schemas.base import AppBaseModel
-from pydantic import EmailStr, Field, field_validator
+from pydantic import EmailStr, Field, field_validator, model_validator
 
 
 class RegisterRequest(AppBaseModel):
@@ -57,3 +57,49 @@ class RegisterResponse(AppBaseModel):
     message: str = (
         "Registration successful. Please verify your phone number with the OTP sent to your phone."
     )
+
+
+class ForgotPasswordRequest(AppBaseModel):
+    phone: NigerianPhone | None = Field(default=None, examples=["2348153551975"])
+    email: EmailStr | None = Field(default=None, examples=["user@example.com"])
+
+    @model_validator(mode="after")
+    def validate_identifier(self) -> Self:
+        if not self.phone and not self.email:
+            raise ValueError("Either phone or email must be provided.")
+        return self
+
+
+class ForgotPasswordResponse(AppBaseModel):
+    message: str = (
+        "If an account exists with the provided details, "
+        "password reset instructions have been sent. "
+        "If you need further assistance, please contact support."
+    )
+
+
+class ResetPasswordRequest(AppBaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=128)
+    phone: NigerianPhone | None = Field(default=None)
+
+    @field_validator("token")
+    @classmethod
+    def strip_token(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Token cannot be blank.")
+        return stripped
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit.")
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter.")
+        return v
+
+
+class ResetPasswordResponse(AppBaseModel):
+    message: str = "Password has been reset successfully."

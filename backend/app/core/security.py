@@ -44,8 +44,13 @@ class TokenPayload(BaseModel):
     exp: datetime
 
 
-def create_access_token(user_id: UUID, role: str, settings: Settings) -> str:
-    now = datetime.now(UTC)
+def create_access_token(
+    user_id: UUID,
+    role: str,
+    settings: Settings,
+    issued_at: datetime | None = None,
+) -> str:
+    now = issued_at or datetime.now(UTC)
     payload: dict[str, str | datetime] = {
         "sub": str(user_id),
         "role": role,
@@ -56,8 +61,13 @@ def create_access_token(user_id: UUID, role: str, settings: Settings) -> str:
     return jwt.encode(payload, settings.JWT_ACCESS_SECRET, algorithm="HS256")
 
 
-def create_refresh_token(user_id: UUID, role: str, settings: Settings) -> str:
-    now = datetime.now(UTC)
+def create_refresh_token(
+    user_id: UUID,
+    role: str,
+    settings: Settings,
+    issued_at: datetime | None = None,
+) -> str:
+    now = issued_at or datetime.now(UTC)
     payload: dict[str, str | datetime] = {
         "sub": str(user_id),
         "role": role,

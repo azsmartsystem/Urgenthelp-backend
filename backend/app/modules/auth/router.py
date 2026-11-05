@@ -7,19 +7,34 @@ from app.core.validators import CanonicalPhone
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.modules.auth.schemas import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     OTPVerifyRequest,
     RefreshTokenRequest,
     RegisterRequest,
     RegisterResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     SendOTPRequest,
     TokenResponse,
 )
 from app.modules.auth.service import AuthService
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
+
+
+def _get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
 
 
 def _get_service(
@@ -75,3 +90,25 @@ async def refresh_tokens(
 ) -> TokenResponse:
     """Exchange a refresh token for new access + refresh tokens."""
     return await service.refresh(payload.refresh_token)
+
+
+@router.post("/password/forgot", response_model=ForgotPasswordResponse, status_code=200)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> ForgotPasswordResponse:
+    """Initiate tiered account recovery (email link or SMS OTP) with anti-enumeration."""
+    ip = _get_client_ip(request)
+    return await service.forgot_password(payload, ip=ip)
+
+
+@router.post("/password/reset", response_model=ResetPasswordResponse, status_code=200)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    request: Request,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> ResetPasswordResponse:
+    """Reset password using a valid one-time recovery token or SMS OTP."""
+    ip = _get_client_ip(request)
+    return await service.reset_password(payload, ip=ip)

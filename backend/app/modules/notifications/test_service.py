@@ -341,6 +341,93 @@ async def test_notification_service_send_verification_email_production_logging()
         )
 
 
+@pytest.mark.asyncio
+async def test_notification_service_send_password_reset_email_success() -> None:
+    mock_email = MockEmailProvider()
+    service = NotificationService(email_provider=mock_email)
+    await service.send_password_reset_email(
+        to="user@example.com",
+        token="test_token_123",
+        expire_minutes=30,
+    )
+    assert len(mock_email.sent_emails) == 1
+    sent = mock_email.sent_emails[0]
+    assert sent["to"] == "user@example.com"
+    assert "test_token_123" in str(sent["body"])
+    assert "30 minutes" in str(sent["body"])
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_password_reset_email_wraps_exception() -> None:
+    failing_provider = AsyncMock()
+    failing_provider.send_email.side_effect = RuntimeError("SMTP connection failed")
+    service = NotificationService(email_provider=failing_provider)
+
+    with pytest.raises(EmailDispatchError) as exc_info:
+        await service.send_password_reset_email(
+            to="user@example.com",
+            token="test_token_123",
+            expire_minutes=30,
+        )
+    assert exc_info.value.code == "EMAIL_DISPATCH_FAILED"
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_password_reset_email_re_raises_dispatch_error() -> None:
+    failing_provider = AsyncMock()
+    failing_provider.send_email.side_effect = EmailDispatchError()
+    service = NotificationService(email_provider=failing_provider)
+
+    with pytest.raises(EmailDispatchError):
+        await service.send_password_reset_email(
+            to="user@example.com",
+            token="test_token_123",
+            expire_minutes=30,
+        )
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_password_reset_email_production_logging() -> None:
+    from unittest.mock import patch
+
+    with patch.dict("os.environ", {"ENVIRONMENT": "production"}):
+        prod_settings = Settings()
+
+    mock_email = MockEmailProvider()
+    service = NotificationService(email_provider=mock_email, settings=prod_settings)
+    await service.send_password_reset_email(
+        to="user@example.com",
+        token="test_token_123",
+        expire_minutes=30,
+    )
+    assert len(mock_email.sent_emails) == 1
+
+    failing = AsyncMock()
+    failing.send_email.side_effect = RuntimeError("network glitch")
+    fail_service = NotificationService(email_provider=failing, settings=prod_settings)
+    with pytest.raises(EmailDispatchError):
+        await fail_service.send_password_reset_email(
+            to="invalid",
+            token="test_token_123",
+            expire_minutes=30,
+        )
+
+
+@pytest.mark.asyncio
+async def test_notification_service_send_password_reset_sms_success() -> None:
+    mock_sms = AsyncMock()
+    service = NotificationService(sms_provider=mock_sms)
+    await service.send_password_reset_sms(
+        to=CanonicalPhone("2348012345678"),
+        otp="654321",
+        expire_minutes=30,
+    )
+    mock_sms.send_sms.assert_awaited_once()
+    assert "654321" in mock_sms.send_sms.call_args.kwargs["message"]
+    assert "30 minutes" in mock_sms.send_sms.call_args.kwargs["message"]
+
+
 def test_get_email_provider(settings: Settings) -> None:
     provider = get_email_provider(settings)
     assert isinstance(provider, MockEmailProvider)
