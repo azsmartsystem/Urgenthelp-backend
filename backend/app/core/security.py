@@ -1,5 +1,6 @@
 """JWT auth utilities — token creation, decoding, and FastAPI dependencies."""
 
+import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
@@ -32,6 +33,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         plain_password.encode("utf-8"),
         hashed_password.encode("utf-8"),
     )
+
+
+def generate_otp(settings: Settings) -> str:
+    """Generate a 6-digit OTP, honoring DEV_STATIC_OTP only outside production."""
+    if settings.DEV_STATIC_OTP is not None and not settings.is_production:
+        return settings.DEV_STATIC_OTP
+    return f"{secrets.randbelow(900000) + 100000}"
 
 
 class TokenPayload(BaseModel):

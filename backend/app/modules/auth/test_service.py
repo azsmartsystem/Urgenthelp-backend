@@ -30,6 +30,7 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    generate_otp,
     get_current_user,
     hash_password,
     require_role,
@@ -49,6 +50,7 @@ from app.modules.auth.schemas import (
 from app.modules.auth.service import AuthService
 from app.modules.users.model import User
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import ValidationError
 from structlog.testing import capture_logs
 
 
@@ -2157,3 +2159,73 @@ async def test_reset_password_clears_ip_failure_counter_on_success(
     )
     # Failure counter must be cleared
     assert await fake_redis.get(f"pwd_reset:fails:ip:{ip}") is None
+
+
+def test_dev_static_otp_settings_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEV_STATIC_OTP allows 6 digits in dev/staging, normalizes blanks, and fails in prod."""
+    monkeypatch.setenv("ENVIRONMENT", "staging")
+    monkeypatch.setenv("DEV_STATIC_OTP", "123456")
+    assert Settings().DEV_STATIC_OTP == "123456"
+
+    monkeypatch.setenv("DEV_STATIC_OTP", "   ")
+    assert Settings().DEV_STATIC_OTP is None
+
+    monkeypatch.setenv("DEV_STATIC_OTP", "12345")
+    with pytest.raises(ValidationError):
+        Settings()
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEV_STATIC_OTP", "123456")
+    with pytest.raises(ValidationError, match="production"):
+        Settings()
+
+
+def test_generate_otp_honors_dev_static_otp_only_outside_production(
+    settings: Settings,
+) -> None:
+    """Defense-in-depth: generate_otp refuses DEV_STATIC_OTP if environment is production."""
+    staging_settings = settings.model_copy(
+        update={"ENVIRONMENT": "staging", "DEV_STATIC_OTP": "123456"}
+    )
+    assert generate_otp(staging_settings) == "123456"
+
+    forced_prod_settings = settings.model_copy(
+        update={"ENVIRONMENT": "production", "DEV_STATIC_OTP": "123456"}
+    )
+    generated = {generate_otp(forced_prod_settings) for _ in range(5)}
+    assert all(code.isdigit() and 100000 <= int(code) <= 999999 for code in generated)
+    assert generated != {"123456"}
+
+
+@pytest.mark.asyncio
+async def test_send_otp_and_forgot_password_use_dev_static_otp(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """AuthService.send_otp and forgot_password Tier 2 SMS both honor DEV_STATIC_OTP."""
+    dev_settings = settings.model_copy(
+        update={"ENVIRONMENT": "staging", "DEV_STATIC_OTP": "123456"}
+    )
+    service = AuthService(db=mock_db, redis_client=fake_redis, settings=dev_settings)
+
+    await _send_otp_like_router(service, "08153551975")
+    assert await fake_redis.get(f"otp:{CANONICAL_PHONE}") == "123456"
+
+    user = User(
+        id=uuid.uuid4(),
+        phone=CANONICAL_PHONE,
+        full_name="Dev OTP User",
+        hashed_password=hash_password("OldPassword123!"),
+        role="customer",
+        is_active=True,
+        email=None,
+        email_verified_at=None,
+    )
+    lookup_result = MagicMock()
+    lookup_result.scalar_one_or_none.return_value = user
+    mock_db.execute.return_value = lookup_result
+
+    await service.forgot_password(ForgotPasswordRequest(phone="08153551975"))
+    expected_hash = hashlib.sha256(b"123456").hexdigest()
+    assert await fake_redis.get(f"pwd_reset:token:{expected_hash}") == str(user.id)

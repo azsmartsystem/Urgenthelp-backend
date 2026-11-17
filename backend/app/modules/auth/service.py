@@ -32,6 +32,7 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    generate_otp,
     hash_password,
     verify_password,
 )
@@ -205,7 +206,7 @@ class AuthService:
                 context={"phone": phone[-4:], "retry_after": retry_after},
             )
 
-        otp = f"{secrets.randbelow(900000) + 100000}"
+        otp = generate_otp(self._settings)
         redis_key = f"otp:{phone}"
         ttl_seconds = self._settings.OTP_EXPIRE_MINUTES * 60
 
@@ -426,7 +427,7 @@ class AuthService:
                     logger.info("pwd_reset_token_dev", user_id=str(user.id), token=raw_token)
             elif user.phone:
                 # Tier 2: SMS OTP
-                raw_otp = f"{secrets.randbelow(900000) + 100000}"
+                raw_otp = generate_otp(self._settings)
                 otp_hash = hashlib.sha256(raw_otp.encode("utf-8")).hexdigest()
                 token_key = f"pwd_reset:token:{otp_hash}"
                 phone_token_key = f"pwd_reset:token:{user.phone}:{otp_hash}"

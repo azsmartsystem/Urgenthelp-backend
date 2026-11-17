@@ -6,9 +6,9 @@ if any required variable is missing or malformed. No silent failures.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, field_validator
+from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve .env relative to this file (backend/.env), not the process CWD, so the
@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     OTP_COOLDOWN_SECONDS: int = Field(default=60, ge=1)
     OTP_MAX_REQUESTS_PER_WINDOW: int = Field(default=3, ge=1)
     OTP_RATE_LIMIT_WINDOW_MINUTES: int = Field(default=10, ge=1)
+    DEV_STATIC_OTP: str | None = Field(default=None, pattern=r"^\d{6}$")
 
     # ── CORS / Hosts ──────────────────────────────────────────────────────────
     CORS_ORIGINS: list[str] | str = []
@@ -97,6 +98,19 @@ class Settings(BaseSettings):
     COMMISSION_RATE: float = Field(default=0.10, ge=0.0, le=1.0)  # 10%
     MAX_HELPER_MATCH_RADIUS_KM: float = Field(default=20.0, ge=1.0)
     DEFAULT_MATCH_RADIUS_KM: float = Field(default=5.0, ge=1.0)
+
+    @field_validator("DEV_STATIC_OTP", mode="before")
+    @classmethod
+    def normalize_dev_static_otp(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @model_validator(mode="after")
+    def validate_dev_static_otp(self) -> Self:
+        if self.DEV_STATIC_OTP is not None and self.ENVIRONMENT == "production":
+            raise ValueError("DEV_STATIC_OTP cannot be set when ENVIRONMENT is 'production'.")
+        return self
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

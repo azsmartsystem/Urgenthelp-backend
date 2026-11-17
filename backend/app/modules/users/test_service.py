@@ -673,3 +673,39 @@ async def test_verify_email_handles_bytes_from_redis(
     )
     assert resp.email == "bytes@example.com"
     assert resp.message == "Email verified successfully"
+
+
+@pytest.mark.asyncio
+async def test_request_email_verification_uses_dev_static_otp_outside_production(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+) -> None:
+    """When DEV_STATIC_OTP is set in non-prod, email verification uses it and verifies cleanly."""
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone="2348153551975",
+        full_name="Test User",
+        hashed_password="hashed_password",
+        role="customer",
+        is_active=True,
+    )
+    mock_db.get.return_value = user
+    mock_db.execute.return_value = _db_returning(None)
+
+    dev_settings = get_settings().model_copy(
+        update={"ENVIRONMENT": "staging", "DEV_STATIC_OTP": "123456"}
+    )
+    service = UserService(db=mock_db, redis_client=fake_redis, settings=dev_settings)
+
+    await service.request_email_verification(
+        user_id=user_id,
+        payload=UpdateEmailRequest(email="dev-otp@example.com"),
+    )
+    assert await fake_redis.get(f"email_otp:{user_id}") == "123456"
+
+    verified = await service.verify_email(
+        user_id=user_id,
+        payload=VerifyEmailRequest(otp="123456"),
+    )
+    assert verified.email == "dev-otp@example.com"

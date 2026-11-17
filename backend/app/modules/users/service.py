@@ -20,6 +20,7 @@ from app.core.exceptions import (
     InvalidEmailOTPError,
     UserNotFoundError,
 )
+from app.core.security import generate_otp
 from app.modules.notifications.service import NotificationService
 from app.modules.users.model import User
 from app.modules.users.schemas import (
@@ -143,7 +144,7 @@ class UserService:
             )
 
         # 4. Generate 6-digit OTP and store state in Redis
-        otp = f"{secrets.randbelow(900000) + 100000}"
+        otp = generate_otp(self._settings)
         otp_key = f"email_otp:{user_id}"
         pending_key = f"pending_email:{user_id}"
         fail_key = f"email_otp_fails:{user_id}"
