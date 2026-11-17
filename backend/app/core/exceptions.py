@@ -265,6 +265,37 @@ class EmailDispatchError(ExternalServiceError):
     status_code: int = status.HTTP_502_BAD_GATEWAY
 
 
+@dataclass
+class PushDispatchError(ExternalServiceError):
+    code: str = "PUSH_DISPATCH_FAILED"
+    detail: str = "Failed to dispatch push notification. Please try again."
+    status_code: int = status.HTTP_502_BAD_GATEWAY
+
+
+# ─── Notifications ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class InvalidNotificationChannelError(UrgentHelpError):
+    code: str = "NOTIFICATION_INVALID_CHANNEL"
+    detail: str = "Invalid notification channel."
+    status_code: int = status.HTTP_400_BAD_REQUEST
+
+
+@dataclass
+class InvalidNotificationEventError(UrgentHelpError):
+    code: str = "NOTIFICATION_INVALID_EVENT"
+    detail: str = "Unknown notification event type."
+    status_code: int = status.HTTP_400_BAD_REQUEST
+
+
+@dataclass
+class TransactionalOptOutError(UrgentHelpError):
+    code: str = "NOTIFICATION_TRANSACTIONAL_OPTOUT"
+    detail: str = "Transactional and system-critical notifications cannot be disabled."
+    status_code: int = status.HTTP_409_CONFLICT
+
+
 # ─── Global Exception Handler Registration ────────────────────────────────────
 
 

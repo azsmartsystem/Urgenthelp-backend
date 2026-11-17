@@ -120,10 +120,10 @@
   - [x] Write tests
   - **Est. Time:** 6h | **Blocker?** ❌ None
 
-- [ ] **Notification Preferences** `GET/PUT /api/v1/notifications/preferences`
-  - [ ] List and update per-channel, per-event opt-ins
-  - [ ] Transactional events (reset, security, receipts) are never opt-out
-  - [ ] Write tests
+- [x] **Notification Preferences** `GET/PUT /api/v1/notifications/preferences` *(Done — Nov 17)*
+  - [x] List and update per-channel, per-event opt-ins
+  - [x] Transactional events (reset, security, receipts) are never opt-out
+  - [x] Write tests
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 **Week 1 Goals:**

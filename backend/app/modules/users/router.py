@@ -9,7 +9,11 @@ from app.core.exceptions import InvalidTokenError
 from app.core.security import TokenPayload, get_current_user
 from app.db.redis import get_redis
 from app.db.session import get_db
-from app.modules.notifications.service import NotificationService
+from app.modules.notifications.service import (
+    NotificationService,
+    get_background_tasks,
+    get_notification_service,
+)
 from app.modules.users.schemas import (
     EmailVerificationResponse,
     UpdateEmailRequest,
@@ -17,7 +21,7 @@ from app.modules.users.schemas import (
     VerifyEmailResponse,
 )
 from app.modules.users.service import UserService
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
@@ -25,8 +29,14 @@ router = APIRouter()
 
 def _get_notification_service(
     settings: Annotated[Settings, Depends(get_settings)],
+    db: Annotated[AsyncSession | None, Depends(get_db)] = None,
+    background_tasks: Annotated[BackgroundTasks | None, Depends(get_background_tasks)] = None,
 ) -> NotificationService:
-    return NotificationService(settings=settings)
+    return get_notification_service(
+        db=db,
+        settings=settings,
+        background_tasks=background_tasks,
+    )
 
 
 def _get_service(
