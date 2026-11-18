@@ -92,6 +92,15 @@ async def refresh_tokens(
     return await service.refresh(payload.refresh_token)
 
 
+@router.post("/logout", status_code=204)
+async def logout(
+    payload: RefreshTokenRequest,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> None:
+    """Revoke the provided refresh token to end the current session."""
+    await service.logout(payload.refresh_token)
+
+
 @router.post("/password/forgot", response_model=ForgotPasswordResponse, status_code=200)
 async def forgot_password(
     payload: ForgotPasswordRequest,

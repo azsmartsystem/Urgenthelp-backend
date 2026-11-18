@@ -13,7 +13,7 @@ from app.core.exceptions import ForbiddenError, InvalidTokenError
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 logger = structlog.get_logger(__name__)
 
@@ -86,11 +86,17 @@ def create_refresh_token(
     return jwt.encode(payload, settings.JWT_REFRESH_SECRET, algorithm="HS256")
 
 
-def decode_token(token: str, secret: str) -> TokenPayload:
+def decode_token(
+    token: str,
+    secret: str,
+    *,
+    allow_expired: bool = False,
+) -> TokenPayload:
+    options = {"verify_exp": False} if allow_expired else None
     try:
-        raw = jwt.decode(token, secret, algorithms=["HS256"])
+        raw = jwt.decode(token, secret, algorithms=["HS256"], options=options)
         return TokenPayload.model_validate(raw)
-    except JWTError as exc:
+    except (JWTError, ValidationError) as exc:
         raise InvalidTokenError() from exc
 
 

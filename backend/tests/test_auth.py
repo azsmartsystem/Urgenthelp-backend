@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import fakeredis.aioredis
 import pytest
 from app.core.config import Settings, get_settings
-from app.core.security import create_refresh_token, hash_password
+from app.core.security import create_access_token, create_refresh_token, hash_password
 from app.db.redis import get_redis
 from app.db.session import get_db
 from app.main import app
@@ -823,3 +823,69 @@ async def test_api_reset_password_strips_token_whitespace_and_scoped_phone(
     )
     assert reset_res.status_code == 200
     assert reset_res.json()["message"] == "Password has been reset successfully."
+
+
+@pytest.mark.asyncio
+async def test_api_logout_success_and_blocks_subsequent_refresh(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    client, _, redis = auth_client
+    user_id = uuid.uuid4()
+    refresh_token = create_refresh_token(user_id, "customer", test_settings)
+
+    logout_res = await client.post("/api/v1/auth/logout", json={"refresh_token": refresh_token})
+    assert logout_res.status_code == 204
+    assert logout_res.content == b""
+    assert await redis.get(f"blacklist:{refresh_token}") == "1"
+
+    refresh_res = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh_res.status_code == 401
+    assert refresh_res.json()["code"] == "AUTH_INVALID_TOKEN"
+
+
+@pytest.mark.asyncio
+async def test_api_logout_is_idempotent(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    client, _, _ = auth_client
+    refresh_token = create_refresh_token(uuid.uuid4(), "customer", test_settings)
+
+    first = await client.post("/api/v1/auth/logout", json={"refresh_token": refresh_token})
+    second = await client.post("/api/v1/auth/logout", json={"refresh_token": refresh_token})
+    assert first.status_code == 204
+    assert second.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_api_logout_expired_refresh_token_returns_204(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    client, _, redis = auth_client
+    expired_iat = datetime.now(UTC) - timedelta(days=test_settings.JWT_REFRESH_EXPIRE_DAYS + 1)
+    expired_refresh = create_refresh_token(
+        uuid.uuid4(), "customer", test_settings, issued_at=expired_iat
+    )
+
+    res = await client.post("/api/v1/auth/logout", json={"refresh_token": expired_refresh})
+    assert res.status_code == 204
+    assert await redis.get(f"blacklist:{expired_refresh}") is None
+
+
+@pytest.mark.asyncio
+async def test_api_logout_invalid_or_access_token_returns_401(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    client, _, _ = auth_client
+
+    malformed = await client.post("/api/v1/auth/logout", json={"refresh_token": "not.a.jwt"})
+    assert malformed.status_code == 401
+    assert malformed.json()["code"] == "AUTH_INVALID_TOKEN"
+
+    access_token = create_access_token(uuid.uuid4(), "customer", test_settings)
+    wrong_type = await client.post("/api/v1/auth/logout", json={"refresh_token": access_token})
+    assert wrong_type.status_code == 401
+    assert wrong_type.json()["code"] == "AUTH_INVALID_TOKEN"

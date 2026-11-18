@@ -302,6 +302,25 @@ class AuthService:
         logger.info("tokens_refreshed", user_id=str(user.id))
         return TokenResponse(access_token=new_access, refresh_token=new_refresh)
 
+    async def logout(self, refresh_token: str) -> None:
+        """Revoke a refresh token so it can no longer mint new tokens."""
+        payload = decode_token(
+            refresh_token,
+            self._settings.JWT_REFRESH_SECRET,
+            allow_expired=True,
+        )
+        if payload.type != "refresh":
+            raise InvalidTokenError(detail="Expected a refresh token.")
+
+        remaining_ttl = int(payload.exp.timestamp() - datetime.now(UTC).timestamp())
+        if remaining_ttl <= 0:
+            logger.info("user_logged_out_expired_token", user_id=payload.sub)
+            return
+
+        blacklist_key = f"blacklist:{refresh_token}"
+        await self._redis.set(blacklist_key, "1", ex=remaining_ttl)
+        logger.info("user_logged_out", user_id=payload.sub)
+
     async def forgot_password(
         self, payload: ForgotPasswordRequest, ip: str = "127.0.0.1"
     ) -> ForgotPasswordResponse:
@@ -522,8 +541,8 @@ class AuthService:
         await self._db.commit()
         await self._db.refresh(user)
 
-        # Invalidate all existing refresh tokens
-        now_ts = datetime.now(UTC).timestamp()
+        # Invalidate all existing refresh tokens (integer seconds to match JWT iat resolution)
+        now_ts = int(datetime.now(UTC).timestamp())
         revocation_ttl = self._settings.JWT_REFRESH_EXPIRE_DAYS * 86400
         await self._redis.set(f"auth:revoked_before:{user.id}", str(now_ts), ex=revocation_ttl)
 

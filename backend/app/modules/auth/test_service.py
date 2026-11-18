@@ -1043,6 +1043,93 @@ async def test_refresh_inactive_user_raises(
         await auth_service.refresh(refresh_token)
 
 
+@pytest.mark.asyncio
+async def test_logout_blacklists_refresh_token_and_blocks_refresh(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    refresh_token = create_refresh_token(user_id, "customer", settings)
+
+    await auth_service.logout(refresh_token)
+
+    assert await fake_redis.get(f"blacklist:{refresh_token}") == "1"
+    ttl = await fake_redis.ttl(f"blacklist:{refresh_token}")
+    assert 0 < ttl <= settings.JWT_REFRESH_EXPIRE_DAYS * 86400
+
+    with pytest.raises(InvalidTokenError):
+        await auth_service.refresh(refresh_token)
+
+
+@pytest.mark.asyncio
+async def test_logout_is_idempotent_for_already_blacklisted_token(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    refresh_token = create_refresh_token(user_id, "customer", settings)
+
+    await auth_service.logout(refresh_token)
+    await auth_service.logout(refresh_token)
+
+    assert await fake_redis.get(f"blacklist:{refresh_token}") == "1"
+
+
+@pytest.mark.asyncio
+async def test_logout_is_idempotent_for_expired_refresh_token(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    user_id = uuid.uuid4()
+    expired_iat = datetime.now(UTC) - timedelta(days=settings.JWT_REFRESH_EXPIRE_DAYS + 1)
+    expired_refresh = create_refresh_token(user_id, "customer", settings, issued_at=expired_iat)
+
+    await auth_service.logout(expired_refresh)
+
+    assert await fake_redis.get(f"blacklist:{expired_refresh}") is None
+
+
+@pytest.mark.asyncio
+async def test_logout_invalid_token_raises(auth_service: AuthService) -> None:
+    with pytest.raises(InvalidTokenError):
+        await auth_service.logout("invalid.jwt.token")
+
+
+@pytest.mark.asyncio
+async def test_logout_with_access_token_raises(
+    auth_service: AuthService,
+    settings: Settings,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from jose import jwt
+
+    user_id = uuid.uuid4()
+    access_token = create_access_token(user_id, "customer", settings)
+    with pytest.raises(InvalidTokenError):
+        await auth_service.logout(access_token)
+
+    now = datetime.now(UTC)
+    token_with_wrong_type = jwt.encode(
+        {
+            "sub": str(user_id),
+            "role": "customer",
+            "type": "access",
+            "iat": now,
+            "exp": now + timedelta(days=1),
+        },
+        settings.JWT_REFRESH_SECRET,
+        algorithm="HS256",
+    )
+    with pytest.raises(InvalidTokenError):
+        await auth_service.logout(token_with_wrong_type)
+
+
 # ─── Security Utilities & Dependencies Tests ─────────────────────────────────
 
 
@@ -1982,6 +2069,39 @@ async def test_refresh_token_revocation_after_password_reset(
     new_refresh_token = create_refresh_token(user_id, "customer", settings)
     tokens = await service.refresh(new_refresh_token)
     assert tokens.access_token is not None
+
+
+@pytest.mark.asyncio
+async def test_reset_password_allows_login_and_refresh_within_same_second(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone="2348153551975",
+        full_name="User",
+        hashed_password=hash_password("OldPassword123!"),
+        role="customer",
+        is_active=True,
+        is_phone_verified=True,
+    )
+    mock_db.get.return_value = user
+    mock_db.execute.return_value = _db_returning(user)
+
+    raw_token = "same_second_reset_token"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    await fake_redis.set(f"pwd_reset:token:{token_hash}", str(user_id))
+
+    service = AuthService(db=mock_db, redis_client=fake_redis, settings=settings)
+    await service.reset_password(
+        ResetPasswordRequest(token=raw_token, new_password="NewPassword123!")
+    )
+
+    tokens = await service.login(LoginRequest(phone="08153551975", password="NewPassword123!"))
+    refreshed = await service.refresh(tokens.refresh_token)
+    assert refreshed.access_token is not None
 
 
 def test_forgot_password_request_validation() -> None:
