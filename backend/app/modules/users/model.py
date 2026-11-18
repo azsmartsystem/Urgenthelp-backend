@@ -10,7 +10,7 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # whenever this module is imported without app.modules.bookings.model. Passing
 # the real column object needs no registry lookup.
 from app.modules.bookings.model import Booking
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Float, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -50,6 +50,9 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     trust_score: Mapped[float] = mapped_column(default=50.0, nullable=False)
 
     # Bookings placed by this user. bookings.helper_id is deliberately not wired

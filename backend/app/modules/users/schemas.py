@@ -1,9 +1,87 @@
 """Pydantic schemas for the users module (email verification, profile management)."""
 
+import uuid
 from datetime import datetime
+from typing import Literal, Self
 
+from app.core.validators import NigerianPhone
 from app.schemas.base import AppBaseModel
-from pydantic import EmailStr, Field, field_validator
+from pydantic import ConfigDict, EmailStr, Field, field_validator, model_validator
+
+
+class UserProfileResponse(AppBaseModel):
+    """Authenticated user profile representation."""
+
+    id: uuid.UUID
+    phone: NigerianPhone
+    email: EmailStr | None = None
+    full_name: str
+    role: Literal["customer", "helper", "admin"]
+    is_active: bool
+    is_id_verified: bool
+    is_phone_verified: bool
+    email_verified_at: datetime | None = None
+    phone_verified_at: datetime | None = None
+    trust_score: float
+    address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    profile_photo_url: str | None = None
+
+
+class UpdateProfileRequest(AppBaseModel):
+    """Partial profile update payload — immutable fields are forbidden."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        strict=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    full_name: str | None = Field(default=None, min_length=2, max_length=100)
+    address: str | None = Field(default=None, min_length=1, max_length=500)
+    latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        stripped = v.strip()
+        if len(stripped) < 2:
+            raise ValueError("Full name must be at least 2 characters.")
+        return stripped
+
+    @field_validator("address")
+    @classmethod
+    def validate_address(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Address cannot be blank.")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_profile_fields(self) -> Self:
+        if "full_name" in self.model_fields_set and self.full_name is None:
+            raise ValueError("full_name cannot be null.")
+
+        lat_set = "latitude" in self.model_fields_set
+        lon_set = "longitude" in self.model_fields_set
+        if lat_set != lon_set:
+            raise ValueError("Both latitude and longitude must be provided together.")
+
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Both latitude and longitude must be provided together.")
+
+        if self.latitude is not None and self.longitude is not None:
+            if self.latitude == 0.0 and self.longitude == 0.0:
+                raise ValueError("Coordinates (0.0, 0.0) are not allowed.")
+
+        return self
 
 
 class UpdateEmailRequest(AppBaseModel):

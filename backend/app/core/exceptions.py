@@ -272,6 +272,30 @@ class PushDispatchError(ExternalServiceError):
     status_code: int = status.HTTP_502_BAD_GATEWAY
 
 
+# ─── Storage / Media Uploads ──────────────────────────────────────────────────
+
+
+@dataclass
+class FileTooLargeError(UrgentHelpError):
+    code: str = "STORAGE_FILE_TOO_LARGE"
+    detail: str = "Uploaded file exceeds the maximum allowed size."
+    status_code: int = status.HTTP_413_CONTENT_TOO_LARGE
+
+
+@dataclass
+class UnsupportedMediaTypeError(UrgentHelpError):
+    code: str = "STORAGE_UNSUPPORTED_MEDIA_TYPE"
+    detail: str = "Unsupported file type. Allowed image formats: JPEG, PNG, WebP."
+    status_code: int = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+
+
+@dataclass
+class StorageError(ExternalServiceError):
+    code: str = "STORAGE_OPERATION_FAILED"
+    detail: str = "Object storage operation failed. Please try again."
+    status_code: int = status.HTTP_502_BAD_GATEWAY
+
+
 # ─── Notifications ────────────────────────────────────────────────────────────
 
 

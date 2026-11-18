@@ -51,3 +51,6 @@ alembic/versions/__pycache__/
 
 # Logs
 *.log
+
+# Local object storage
+storage/

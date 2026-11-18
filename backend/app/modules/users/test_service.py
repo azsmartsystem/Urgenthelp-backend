@@ -13,15 +13,23 @@ from app.core.exceptions import (
     EmailDispatchError,
     EmailOTPExpiredError,
     EmailRateLimitError,
+    FileTooLargeError,
     InactiveUserError,
     InvalidEmailOTPError,
+    StorageError,
+    UnsupportedMediaTypeError,
     UserNotFoundError,
 )
+from app.core.storage import MAX_PROFILE_PHOTO_BYTES, InMemoryStorageBackend
 from app.modules.notifications.service import NotificationService
 from app.modules.users.model import User
-from app.modules.users.schemas import UpdateEmailRequest, VerifyEmailRequest
+from app.modules.users.schemas import (
+    UpdateEmailRequest,
+    UpdateProfileRequest,
+    VerifyEmailRequest,
+)
 from app.modules.users.service import UserService
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.engine import Result
 from sqlalchemy.exc import IntegrityError
 
@@ -59,17 +67,24 @@ def mock_notification_service() -> AsyncMock:
 
 
 @pytest.fixture
+def storage_backend() -> InMemoryStorageBackend:
+    return InMemoryStorageBackend()
+
+
+@pytest.fixture
 def user_service(
     mock_db: AsyncMock,
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
     mock_notification_service: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
 ) -> UserService:
     return UserService(
         db=mock_db,
         redis_client=fake_redis,
         settings=settings,
         notification_service=mock_notification_service,
+        storage_backend=storage_backend,
     )
 
 
@@ -78,6 +93,10 @@ def _make_user(
     email: str | None = None,
     is_active: bool = True,
     email_verified_at: datetime | None = None,
+    address: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    profile_photo_url: str | None = None,
 ) -> User:
     return User(
         id=user_id,
@@ -90,6 +109,10 @@ def _make_user(
         is_id_verified=False,
         is_phone_verified=True,
         email_verified_at=email_verified_at,
+        address=address,
+        latitude=latitude,
+        longitude=longitude,
+        profile_photo_url=profile_photo_url,
         trust_score=50.0,
     )
 
@@ -709,3 +732,386 @@ async def test_request_email_verification_uses_dev_static_otp_outside_production
         payload=VerifyEmailRequest(otp="123456"),
     )
     assert verified.email == "dev-otp@example.com"
+
+
+# ─── Profile Management Tests ─────────────────────────────────────────────────
+
+
+class _FakeUploadStream:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self._offset = 0
+
+    async def read(self, size: int = -1) -> bytes:
+        if self._offset >= len(self._payload):
+            return b""
+        if size < 0:
+            chunk = self._payload[self._offset :]
+        else:
+            chunk = self._payload[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+
+@pytest.mark.asyncio
+async def test_get_me_returns_profile_and_resolves_photo_url(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    key = f"public/profile-photos/{user_id}/avatar.png"
+    user = _make_user(
+        user_id=user_id,
+        email="me@example.com",
+        address="12 Allen Avenue, Ikeja",
+        latitude=6.6018,
+        longitude=3.3515,
+        profile_photo_url=key,
+    )
+    mock_db.get.return_value = user
+
+    profile = await user_service.get_me(user_id)
+    assert profile.id == user_id
+    assert profile.email == "me@example.com"
+    assert profile.address == "12 Allen Avenue, Ikeja"
+    assert profile.latitude == 6.6018
+    assert profile.longitude == 3.3515
+    assert profile.profile_photo_url == storage_backend.get_public_url(key)
+
+
+@pytest.mark.asyncio
+async def test_get_me_preserves_external_photo_url_and_none(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    user_with_external = _make_user(
+        user_id=user_id,
+        profile_photo_url="https://cdn.external.test/avatar.jpg",
+    )
+    mock_db.get.return_value = user_with_external
+    profile = await user_service.get_me(user_id)
+    assert profile.profile_photo_url == "https://cdn.external.test/avatar.jpg"
+
+    user_no_photo = _make_user(user_id=user_id, profile_photo_url=None)
+    mock_db.get.return_value = user_no_photo
+    profile_none = await user_service.get_me(user_id)
+    assert profile_none.profile_photo_url is None
+
+    # Whitespace-only treated as None; leading-slash passed through; invalid key falls back to None
+    mock_db.get.return_value = _make_user(user_id=user_id, profile_photo_url="   ")
+    assert (await user_service.get_me(user_id)).profile_photo_url is None
+
+    mock_db.get.return_value = _make_user(user_id=user_id, profile_photo_url="/storage/legacy.jpg")
+    assert (await user_service.get_me(user_id)).profile_photo_url == "/storage/legacy.jpg"
+
+    mock_db.get.return_value = _make_user(user_id=user_id, profile_photo_url="../malformed.jpg")
+    assert (await user_service.get_me(user_id)).profile_photo_url is None
+
+
+@pytest.mark.asyncio
+async def test_get_me_raises_not_found_and_inactive(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    mock_db.get.return_value = None
+    with pytest.raises(UserNotFoundError):
+        await user_service.get_me(user_id)
+
+    mock_db.get.return_value = _make_user(user_id=user_id, is_active=False)
+    with pytest.raises(InactiveUserError):
+        await user_service.get_me(user_id)
+
+
+@pytest.mark.asyncio
+async def test_update_profile_partial_preserves_unset_fields(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(
+        user_id=user_id,
+        address="Old Address",
+        latitude=6.5,
+        longitude=3.3,
+    )
+    mock_db.get.return_value = user
+
+    updated = await user_service.update_profile(
+        user_id=user_id,
+        payload=UpdateProfileRequest(full_name="  Updated Name  "),
+    )
+    assert updated.full_name == "Updated Name"
+    assert updated.address == "Old Address"
+    assert updated.latitude == 6.5
+    assert updated.longitude == 3.3
+    mock_db.commit.assert_awaited_once()
+    mock_db.refresh.assert_awaited_once_with(user)
+
+
+@pytest.mark.asyncio
+async def test_update_profile_coordinates_clear_and_empty_noop(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(
+        user_id=user_id,
+        address="Victoria Island",
+        latitude=6.4281,
+        longitude=3.4219,
+    )
+    mock_db.get.return_value = user
+
+    # Empty payload makes no DB write
+    unchanged = await user_service.update_profile(user_id=user_id, payload=UpdateProfileRequest())
+    assert unchanged.address == "Victoria Island"
+    mock_db.commit.assert_not_awaited()
+
+    # Clear address and coordinates explicitly with null
+    cleared = await user_service.update_profile(
+        user_id=user_id,
+        payload=UpdateProfileRequest(address=None, latitude=None, longitude=None),
+    )
+    assert cleared.address is None
+    assert cleared.latitude is None
+    assert cleared.longitude is None
+    mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_profile_not_found_and_inactive(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    mock_db.get.return_value = None
+    with pytest.raises(UserNotFoundError):
+        await user_service.update_profile(user_id, UpdateProfileRequest(full_name="Alice"))
+
+    mock_db.get.return_value = _make_user(user_id=user_id, is_active=False)
+    with pytest.raises(InactiveUserError):
+        await user_service.update_profile(user_id, UpdateProfileRequest(full_name="Alice"))
+
+
+@pytest.mark.parametrize(
+    "bad_payload",
+    [
+        {"role": "admin"},
+        {"is_id_verified": True},
+        {"is_active": False},
+        {"is_phone_verified": True},
+        {"trust_score": 100.0},
+        {"phone": "2348011112222"},
+        {"email": "hacker@example.com"},
+        {"full_name": None},
+        {"full_name": "   "},
+        {"full_name": " A"},
+        {"full_name": "a" * 101},
+        {"address": "   "},
+        {"address": "a" * 501},
+        {"latitude": 6.5},
+        {"longitude": 3.4},
+        {"latitude": None},
+        {"latitude": 6.5, "longitude": None},
+        {"latitude": 0.0, "longitude": 0.0},
+        {"latitude": -90.1, "longitude": 3.4},
+        {"latitude": 90.1, "longitude": 3.4},
+        {"latitude": 6.5, "longitude": -180.1},
+        {"latitude": 6.5, "longitude": 180.1},
+        {"latitude": "6.5", "longitude": "3.4"},
+        {"latitude": True, "longitude": False},
+    ],
+)
+def test_update_profile_request_rejects_invalid_and_forbidden_inputs(
+    bad_payload: dict[str, object],
+) -> None:
+    adapter: TypeAdapter[UpdateProfileRequest] = TypeAdapter(UpdateProfileRequest)
+    with pytest.raises(ValidationError):
+        adapter.validate_python(bad_payload)
+
+
+def test_update_profile_request_accepts_equator_nonzero_and_bounds() -> None:
+    req_eq = UpdateProfileRequest(latitude=0.0, longitude=10.5)
+    assert req_eq.latitude == 0.0
+    assert req_eq.longitude == 10.5
+
+    req_bounds = UpdateProfileRequest(latitude=-90.0, longitude=180.0)
+    assert req_bounds.latitude == -90.0
+    assert req_bounds.longitude == 180.0
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_stores_key_and_cleans_up_previous_managed_key(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    old_key = f"public/profile-photos/{user_id}/old-avatar.png"
+    await storage_backend.upload(old_key, b"old-bytes", "image/png")
+
+    user = _make_user(user_id=user_id, profile_photo_url=old_key)
+    mock_db.get.return_value = user
+
+    jpeg_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 64
+    resp = await user_service.upload_profile_photo(user_id, _FakeUploadStream(jpeg_bytes))
+
+    assert user.profile_photo_url is not None
+    assert user.profile_photo_url.startswith(f"public/profile-photos/{user_id}/")
+    assert user.profile_photo_url.endswith(".jpg")
+    assert user.profile_photo_url != old_key
+    assert resp.profile_photo_url == storage_backend.get_public_url(user.profile_photo_url)
+    assert storage_backend.get_object(user.profile_photo_url) == (jpeg_bytes, "image/jpeg")
+    assert storage_backend.get_object(old_key) is None
+    mock_db.commit.assert_awaited_once()
+    mock_db.refresh.assert_awaited_once_with(user)
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_best_effort_old_cleanup_failure_still_succeeds(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    old_key = f"public/profile-photos/{user_id}/old.png"
+    user = _make_user(user_id=user_id, profile_photo_url=old_key)
+    mock_db.get.return_value = user
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    with patch.object(
+        storage_backend,
+        "delete",
+        new=AsyncMock(side_effect=StorageError(detail="delete error")),
+    ):
+        resp = await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))
+
+    assert resp.profile_photo_url is not None
+    assert user.profile_photo_url is not None
+    assert user.profile_photo_url.endswith(".png")
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_ignores_external_url_cleanup(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id, profile_photo_url="https://external.example.com/pic.jpg")
+    mock_db.get.return_value = user
+
+    webp_bytes = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"\x00" * 16
+    with patch.object(storage_backend, "delete", new=AsyncMock()) as mock_delete:
+        resp = await user_service.upload_profile_photo(user_id, _FakeUploadStream(webp_bytes))
+
+    mock_delete.assert_not_awaited()
+    assert resp.profile_photo_url is not None
+    assert user.profile_photo_url is not None
+    assert user.profile_photo_url.endswith(".webp")
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_storage_failure_leaves_db_unchanged(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id, profile_photo_url="public/profile-photos/keep.png")
+    mock_db.get.return_value = user
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    with patch.object(
+        storage_backend,
+        "upload",
+        new=AsyncMock(side_effect=StorageError(detail="S3 unavailable")),
+    ):
+        with pytest.raises(StorageError) as exc_info:
+            await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))
+
+    assert exc_info.value.status_code == 502
+    assert user.profile_photo_url == "public/profile-photos/keep.png"
+    mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_commit_failure_rolls_back_and_cleans_orphan(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id, profile_photo_url=None)
+    mock_db.get.return_value = user
+    mock_db.commit.side_effect = RuntimeError("DB connection lost")
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    with pytest.raises(RuntimeError, match="DB connection lost"):
+        await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))
+
+    mock_db.rollback.assert_awaited_once()
+    assert storage_backend._objects == {}
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_commit_and_orphan_cleanup_failure_reraises_db_error(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id, profile_photo_url=None)
+    mock_db.get.return_value = user
+    mock_db.commit.side_effect = RuntimeError("DB connection lost")
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    with patch.object(
+        storage_backend,
+        "delete",
+        new=AsyncMock(side_effect=StorageError(detail="cleanup failed")),
+    ):
+        with pytest.raises(RuntimeError, match="DB connection lost"):
+            await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_rejects_oversized_and_forged_before_storage_write(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id)
+    mock_db.get.return_value = user
+
+    oversized = b"\xff\xd8\xff\xe0" + b"a" * MAX_PROFILE_PHOTO_BYTES
+    with pytest.raises(FileTooLargeError):
+        await user_service.upload_profile_photo(user_id, _FakeUploadStream(oversized))
+
+    forged_svg = b"<svg xmlns='http://www.w3.org/2000/svg'></svg>"
+    with pytest.raises(UnsupportedMediaTypeError):
+        await user_service.upload_profile_photo(user_id, _FakeUploadStream(forged_svg))
+
+    assert storage_backend._objects == {}
+    mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upload_profile_photo_not_found_and_inactive(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    mock_db.get.return_value = None
+    with pytest.raises(UserNotFoundError):
+        await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))
+
+    mock_db.get.return_value = _make_user(user_id=user_id, is_active=False)
+    with pytest.raises(InactiveUserError):
+        await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))

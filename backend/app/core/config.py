@@ -58,9 +58,11 @@ class Settings(BaseSettings):
     PAYSTACK_BASE_URL: AnyHttpUrl = AnyHttpUrl("https://api.paystack.co")
 
     # ── AWS S3 / Object Storage ───────────────────────────────────────────────
-    AWS_ACCESS_KEY_ID: str
-    AWS_SECRET_ACCESS_KEY: str
-    AWS_S3_BUCKET: str
+    STORAGE_PROVIDER: Literal["s3", "local", "memory"] = "local"
+    LOCAL_STORAGE_DIR: str = "./storage"
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
+    AWS_S3_BUCKET: str | None = None
     AWS_S3_REGION: str = "us-east-1"
     AWS_S3_ENDPOINT_URL: AnyHttpUrl | None = None  # set for Cloudflare R2
 
@@ -110,6 +112,31 @@ class Settings(BaseSettings):
     def validate_dev_static_otp(self) -> Self:
         if self.DEV_STATIC_OTP is not None and self.ENVIRONMENT == "production":
             raise ValueError("DEV_STATIC_OTP cannot be set when ENVIRONMENT is 'production'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_storage_settings(self) -> Self:
+        if self.STORAGE_PROVIDER == "s3":
+            missing = [
+                name
+                for name, val in (
+                    ("AWS_ACCESS_KEY_ID", self.AWS_ACCESS_KEY_ID),
+                    ("AWS_SECRET_ACCESS_KEY", self.AWS_SECRET_ACCESS_KEY),
+                    ("AWS_S3_BUCKET", self.AWS_S3_BUCKET),
+                )
+                if not isinstance(val, str) or not val.strip()
+            ]
+            if missing:
+                joined = ", ".join(missing)
+                raise ValueError(f"{joined} must be non-empty when STORAGE_PROVIDER is 's3'.")
+        elif self.STORAGE_PROVIDER == "local" and not self.LOCAL_STORAGE_DIR.strip():
+            raise ValueError(
+                "LOCAL_STORAGE_DIR must be non-empty when STORAGE_PROVIDER is 'local'."
+            )
+        elif self.STORAGE_PROVIDER == "memory" and self.ENVIRONMENT == "production":
+            raise ValueError(
+                "STORAGE_PROVIDER cannot be 'memory' when ENVIRONMENT is 'production'."
+            )
         return self
 
     @field_validator("CORS_ORIGINS", mode="before")
