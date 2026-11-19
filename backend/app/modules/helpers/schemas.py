@@ -1,10 +1,10 @@
 """Pydantic schemas for the helpers module."""
 
 import uuid
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from app.schemas.base import AppBaseModel
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, Strict, field_validator, model_validator
 
 DayOfWeek = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -75,7 +75,9 @@ class UpdateHelperProfileRequest(AppBaseModel):
     is_available: bool | None = None
     availability_schedule: dict[DayOfWeek, DaySchedule] | None = None
     certifications: list[str] | None = Field(default=None, max_length=20)
-    category_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
+    category_ids: list[Annotated[uuid.UUID, Strict(False)]] | None = Field(
+        default=None, max_length=20
+    )
 
     @field_validator("bio")
     @classmethod

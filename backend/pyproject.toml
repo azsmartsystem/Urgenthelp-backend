@@ -125,6 +125,9 @@ exclude = ["^alembic/"]
 asyncio_mode = "auto"
 testpaths = ["tests", "app"]
 addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    "integration: tests requiring live PostgreSQL and Redis",
+]
 
 [tool.coverage.run]
 source = ["app"]
