@@ -1,8 +1,9 @@
-"""Auth module — registration, OTP login, token refresh."""
+"""Auth module — registration, verification, login, logout, and password recovery."""
 
 from typing import Annotated
 
 import redis.asyncio as aioredis
+from app.core.config import Settings, get_settings
 from app.core.validators import CanonicalPhone
 from app.db.redis import get_redis
 from app.db.session import get_db
@@ -11,13 +12,17 @@ from app.modules.auth.schemas import (
     ForgotPasswordResponse,
     LoginRequest,
     OTPVerifyRequest,
+    PhoneCheckRequest,
+    PhoneCheckResponse,
     RefreshTokenRequest,
     RegisterRequest,
     RegisterResponse,
     ResetPasswordRequest,
     ResetPasswordResponse,
+    SendEmailVerificationRequest,
     SendOTPRequest,
     TokenResponse,
+    VerifyEmailOTPRequest,
 )
 from app.modules.auth.service import AuthService
 from fastapi import APIRouter, Depends, Request
@@ -40,8 +45,20 @@ def _get_client_ip(request: Request) -> str:
 def _get_service(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis_client: Annotated[aioredis.Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AuthService:
-    return AuthService(db=db, redis_client=redis_client)
+    return AuthService(db=db, redis_client=redis_client, settings=settings)
+
+
+@router.post("/phone/check", response_model=PhoneCheckResponse, status_code=200)
+async def check_phone(
+    payload: PhoneCheckRequest,
+    request: Request,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> PhoneCheckResponse:
+    """Validate a Nigerian phone number and report whether an account already exists."""
+    ip = _get_client_ip(request)
+    return await service.check_phone(CanonicalPhone(payload.phone), ip=ip)
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=201)
@@ -83,6 +100,24 @@ async def verify_otp(
     return await service.verify_otp(payload)
 
 
+@router.post("/email/send", status_code=204)
+async def send_email_otp(
+    payload: SendEmailVerificationRequest,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> None:
+    """Send an email verification OTP to an unverified account."""
+    await service.send_email_otp(str(payload.email))
+
+
+@router.post("/email/verify", response_model=TokenResponse)
+async def verify_email_otp(
+    payload: VerifyEmailOTPRequest,
+    service: Annotated[AuthService, Depends(_get_service)],
+) -> TokenResponse:
+    """Verify email OTP and return access + refresh tokens once phone is also verified."""
+    return await service.verify_email_otp(payload)
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_tokens(
     payload: RefreshTokenRequest,
@@ -107,7 +142,7 @@ async def forgot_password(
     request: Request,
     service: Annotated[AuthService, Depends(_get_service)],
 ) -> ForgotPasswordResponse:
-    """Initiate tiered account recovery (email link or SMS OTP) with anti-enumeration."""
+    """Initiate verified-email password recovery with anti-enumeration."""
     ip = _get_client_ip(request)
     return await service.forgot_password(payload, ip=ip)
 
@@ -118,6 +153,6 @@ async def reset_password(
     request: Request,
     service: Annotated[AuthService, Depends(_get_service)],
 ) -> ResetPasswordResponse:
-    """Reset password using a valid one-time recovery token or SMS OTP."""
+    """Reset password using a valid one-time email recovery token."""
     ip = _get_client_ip(request)
     return await service.reset_password(payload, ip=ip)

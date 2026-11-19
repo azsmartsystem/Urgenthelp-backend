@@ -1,14 +1,14 @@
 import uuid
-from typing import Literal, Self
+from typing import Literal
 
 from app.core.validators import NigerianPhone
 from app.schemas.base import AppBaseModel
-from pydantic import EmailStr, Field, field_validator, model_validator
+from pydantic import EmailStr, Field, field_validator
 
 
 class RegisterRequest(AppBaseModel):
     phone: NigerianPhone = Field(examples=["2348153551975"])
-    email: EmailStr | None = Field(default=None, examples=["user@example.com"])
+    email: EmailStr = Field(examples=["user@example.com"])
     full_name: str = Field(min_length=2, max_length=100)
     role: Literal["customer", "helper"]
     password: str = Field(min_length=8, max_length=128)
@@ -32,8 +32,26 @@ class SendOTPRequest(AppBaseModel):
     phone: NigerianPhone = Field(examples=["2348153551975"])
 
 
+class PhoneCheckRequest(AppBaseModel):
+    phone: NigerianPhone = Field(examples=["2348153551975"])
+
+
+class PhoneCheckResponse(AppBaseModel):
+    phone: NigerianPhone = Field(examples=["2348153551975"])
+    is_registered: bool
+
+
 class OTPVerifyRequest(AppBaseModel):
     phone: NigerianPhone = Field(examples=["2348153551975"])
+    otp: str = Field(min_length=4, max_length=8)
+
+
+class SendEmailVerificationRequest(AppBaseModel):
+    email: EmailStr = Field(examples=["user@example.com"])
+
+
+class VerifyEmailOTPRequest(AppBaseModel):
+    email: EmailStr = Field(examples=["user@example.com"])
     otp: str = Field(min_length=4, max_length=8)
 
 
@@ -52,22 +70,14 @@ class RegisterResponse(AppBaseModel):
     phone: NigerianPhone
     full_name: str
     role: Literal["customer", "helper", "admin"]
-    email: EmailStr | None = None
+    email: EmailStr
     is_phone_verified: bool = False
-    message: str = (
-        "Registration successful. Please verify your phone number with the OTP sent to your phone."
-    )
+    is_email_verified: bool = False
+    message: str = "Registration successful. Please verify your phone number and email address."
 
 
 class ForgotPasswordRequest(AppBaseModel):
-    phone: NigerianPhone | None = Field(default=None, examples=["2348153551975"])
-    email: EmailStr | None = Field(default=None, examples=["user@example.com"])
-
-    @model_validator(mode="after")
-    def validate_identifier(self) -> Self:
-        if not self.phone and not self.email:
-            raise ValueError("Either phone or email must be provided.")
-        return self
+    email: EmailStr = Field(examples=["user@example.com"])
 
 
 class ForgotPasswordResponse(AppBaseModel):
@@ -81,7 +91,6 @@ class ForgotPasswordResponse(AppBaseModel):
 class ResetPasswordRequest(AppBaseModel):
     token: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=8, max_length=128)
-    phone: NigerianPhone | None = Field(default=None)
 
     @field_validator("token")
     @classmethod

@@ -22,8 +22,12 @@ from app.core.exceptions import (
 logger = structlog.get_logger(__name__)
 
 MAX_PROFILE_PHOTO_BYTES: int = 5 * 1024 * 1024  # 5 MiB
+MAX_IDENTITY_DOCUMENT_BYTES: int = 5 * 1024 * 1024  # 5 MiB
 _READ_CHUNK_SIZE: int = 64 * 1024  # 64 KiB
 DEFAULT_ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset({"image/jpeg", "image/png", "image/webp"})
+DEFAULT_ALLOWED_DOCUMENT_TYPES: frozenset[str] = frozenset(
+    {"image/jpeg", "image/png", "application/pdf"}
+)
 
 
 @dataclass(frozen=True)
@@ -94,17 +98,18 @@ def _detect_image_magic(data: bytes) -> tuple[str, str] | None:
     return None
 
 
-async def validate_image_upload(
-    file: AsyncReadableFile,
-    *,
-    max_bytes: int = MAX_PROFILE_PHOTO_BYTES,
-    allowed_types: frozenset[str] = DEFAULT_ALLOWED_IMAGE_TYPES,
-) -> ValidatedImage:
-    """Stream-read an uploaded image with a hard byte ceiling and verify magic bytes.
+def _detect_document_magic(data: bytes) -> tuple[str, str] | None:
+    """Inspect magic bytes for identity documents (JPEG, PNG, PDF)."""
+    image_match = _detect_image_magic(data)
+    if image_match is not None:
+        return image_match
+    if data.startswith(b"%PDF-"):
+        return ("application/pdf", "pdf")
+    return None
 
-    Client-supplied ``Content-Type`` headers and filenames are never trusted;
-    media type and file extension are derived solely from magic bytes.
-    """
+
+async def _read_bounded_stream(file: AsyncReadableFile, max_bytes: int) -> bytes:
+    """Stream-read up to ``max_bytes`` bytes, raising ``FileTooLargeError`` if exceeded."""
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive.")
 
@@ -125,7 +130,21 @@ async def validate_image_upload(
             )
         chunks.append(chunk)
 
-    data = b"".join(chunks)
+    return b"".join(chunks)
+
+
+async def validate_image_upload(
+    file: AsyncReadableFile,
+    *,
+    max_bytes: int = MAX_PROFILE_PHOTO_BYTES,
+    allowed_types: frozenset[str] = DEFAULT_ALLOWED_IMAGE_TYPES,
+) -> ValidatedImage:
+    """Stream-read an uploaded image with a hard byte ceiling and verify magic bytes.
+
+    Client-supplied ``Content-Type`` headers and filenames are never trusted;
+    media type and file extension are derived solely from magic bytes.
+    """
+    data = await _read_bounded_stream(file, max_bytes)
     detected = _detect_image_magic(data)
     if detected is None:
         raise UnsupportedMediaTypeError(
@@ -136,6 +155,34 @@ async def validate_image_upload(
     if content_type not in allowed_types:
         raise UnsupportedMediaTypeError(
             detail=f"Image type '{content_type}' is not permitted for this upload.",
+            context={"detected_content_type": content_type},
+        )
+
+    return ValidatedImage(
+        data=data,
+        content_type=content_type,
+        extension=extension,
+    )
+
+
+async def validate_document_upload(
+    file: AsyncReadableFile,
+    *,
+    max_bytes: int = MAX_IDENTITY_DOCUMENT_BYTES,
+    allowed_types: frozenset[str] = DEFAULT_ALLOWED_DOCUMENT_TYPES,
+) -> ValidatedImage:
+    """Stream-read an uploaded identity document (JPEG, PNG, PDF) and verify magic bytes."""
+    data = await _read_bounded_stream(file, max_bytes)
+    detected = _detect_document_magic(data)
+    if detected is None:
+        raise UnsupportedMediaTypeError(
+            detail="Unsupported file type. Only JPEG, PNG, and PDF documents are allowed.",
+        )
+
+    content_type, extension = detected
+    if content_type not in allowed_types:
+        raise UnsupportedMediaTypeError(
+            detail=f"Document type '{content_type}' is not permitted for this upload.",
             context={"detected_content_type": content_type},
         )
 

@@ -5,10 +5,10 @@ This module has a clean interface so the scoring logic can be replaced
 with an ML model later without changing any calling code.
 """
 
-import math
 from dataclasses import dataclass
 
 import structlog
+from app.core.geo import haversine_km
 
 logger = structlog.get_logger(__name__)
 
@@ -52,14 +52,7 @@ class RankedHelper:
     score: float  # 0.0 - 1.0
 
 
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance between two GPS coordinates in km."""
-    earth_radius_km = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+_haversine_km = haversine_km
 
 
 def _distance_score(distance_km: float) -> float:

@@ -141,44 +141,44 @@
 
 #### 🎯 Tasks 002
 
-- [ ] **Migration: `helper_profiles` extension fields**
-  - [ ] Skills (array), service radius, availability schedule, bio, certifications
-  - [ ] Alembic migration
+- [x] **Migration: `helper_profiles` extension fields** *(Done — Nov 19)*
+  - [x] `helper_profiles` + `helper_categories` FK join table + `identity_verifications` (service radius, availability schedule, bio, certifications)
+  - [x] Alembic migration (`20261119_9b4e1c2f7a11`)
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
-- [ ] **Users Module** — `GET/PUT /api/v1/users/me`
-  - [ ] `UserService.get_me()` — fetch authenticated user profile
-  - [ ] `UserService.update_profile()` — update name, photo, address
-  - [ ] Profile photo upload to S3
-  - [ ] Write tests
-  - **Est. Time:** 4h | **Blocker?** ⚠️ AWS S3 credentials
+- [x] **Users Module** — `GET/PUT /api/v1/users/me` *(Done — Nov 18)*
+  - [x] `UserService.get_me()` — fetch authenticated user profile
+  - [x] `UserService.update_profile()` — update name, photo, address
+  - [x] Profile photo upload (`StorageBackend` Protocol: local/S3)
+  - [x] Write tests
+  - **Est. Time:** 4h | **Blocker?** ❌ None
 
-- [ ] **Helpers Module** — `GET/PUT /api/v1/helpers/me`
-  - [ ] `HelperService.update_helper_profile()` — skills, availability, radius
-  - [ ] `HelperService.get_helpers_nearby()` — geospatial query (lat/lon + radius)
-  - [ ] Write tests
+- [x] **Helpers Module** — `GET/PUT /api/v1/helpers/me` + `GET /api/v1/helpers/nearby` *(Done — Nov 19)*
+  - [x] `HelperService.update_helper_profile()` — skills (`category_ids`), availability, radius, bio, certifications
+  - [x] `HelperService.get_helpers_nearby()` — shared `core/geo.py` bounding-box + Haversine geospatial query
+  - [x] Write tests
   - **Est. Time:** 5h | **Blocker?** ❌ None
 
-- [ ] **Service Categories Module** — `GET /api/v1/categories`
-  - [ ] `CategoryService.list_categories()` — return all active categories
-  - [ ] Migration: `service_categories` table
-  - [ ] Seed initial 18 categories from PRD
-  - [ ] Write tests
+- [x] **Service Categories Module** — `GET /api/v1/categories` *(Done — Nov 18)*
+  - [x] `CategoryService.list_categories()` — return all active categories
+  - [x] Migration: `service_categories` table
+  - [x] Seed canonical PRD categories (`20261118_7c4a9e1b2d08`)
+  - [x] Write tests
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
-- [ ] **Identity Verification — Upload** `POST /api/v1/users/verify-identity`
-  - [ ] Accept government ID image upload (jpg/png/pdf, max 5MB)
-  - [ ] Store securely in S3 (`/identity-docs/<user-id>/`)
-  - [ ] Set `is_id_verified = False`, flag for admin review
-  - [ ] Write tests
+- [x] **Identity Verification — Upload** `POST /api/v1/users/verify-identity` *(Done — Nov 19)*
+  - [x] Accept government ID upload (jpg/png/pdf, max 5MB, magic-byte validated)
+  - [x] Store via `StorageBackend` (`identity-docs/<user-id>/<uuid>.<ext>`)
+  - [x] Set `is_id_verified = False`, create `pending` `IdentityVerification` record for admin review
+  - [x] Write tests
   - **Est. Time:** 3h | **Blocker?** ❌ None
 
 **Week 2 Goals:**
 
-- [ ] Customer and Helper can update their profiles
-- [ ] Helper can set skills, radius, and availability
-- [ ] Categories API returns the 18 PRD categories
-- [ ] ID document upload working
+- [x] Customer and Helper can update their profiles
+- [x] Helper can set skills, radius, and availability
+- [x] Categories API returns the canonical PRD categories
+- [x] ID document upload working
 
 ---
 

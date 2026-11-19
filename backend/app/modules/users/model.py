@@ -1,5 +1,6 @@
 """User ORM model."""
 
+import uuid
 from datetime import datetime
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -10,7 +11,18 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # whenever this module is imported without app.modules.bookings.model. Passing
 # the real column object needs no registry lookup.
 from app.modules.bookings.model import Booking
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, Float, String, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    String,
+    Text,
+    text,
+)
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
@@ -62,3 +74,41 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         foreign_keys=[Booking.__table__.c.customer_id],
         back_populates="customer",
     )
+
+
+class IdentityVerification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Government ID verification submission awaiting admin review."""
+
+    __tablename__ = "identity_verifications"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    document_type: Mapped[str] = mapped_column(
+        Enum(
+            "nin",
+            "drivers_license",
+            "voters_card",
+            "international_passport",
+            name="id_document_type_enum",
+        ),
+        nullable=False,
+    )
+    document_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(
+        Enum("pending", "approved", "rejected", name="verification_status_enum"),
+        default="pending",
+        server_default=text("'pending'"),
+        nullable=False,
+        index=True,
+    )
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -10,9 +10,12 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     EmailAlreadyRegisteredError,
     EmailDispatchError,
+    EmailNotVerifiedError,
+    EmailOTPExpiredError,
     ForbiddenError,
     InactiveUserError,
     InvalidCredentialsError,
+    InvalidEmailOTPError,
     InvalidOTPError,
     InvalidPasswordResetTokenError,
     InvalidTokenError,
@@ -46,6 +49,7 @@ from app.modules.auth.schemas import (
     ResetPasswordRequest,
     ResetPasswordResponse,
     SendOTPRequest,
+    VerifyEmailOTPRequest,
 )
 from app.modules.auth.service import AuthService
 from app.modules.users.model import User
@@ -110,45 +114,69 @@ async def test_register_customer_success(
     assert response.role == "customer"
     assert response.email == "john@example.com"
     assert response.is_phone_verified is False
+    assert response.is_email_verified is False
     assert "verify" in response.message.lower()
     assert mock_db.add.called
     assert mock_db.commit.called
 
-    # Verify OTP was dispatched and stored in Redis
+    # Verify both phone and email OTPs were dispatched and stored in Redis
     stored_otp = await fake_redis.get("otp:2348012345678")
     assert stored_otp is not None
     assert len(str(stored_otp)) == 6
+    stored_email_otp = await fake_redis.get(f"email_otp:{response.id}")
+    assert stored_email_otp is not None
+    assert len(str(stored_email_otp)) == 6
 
 
 @pytest.mark.asyncio
-async def test_register_helper_without_email_success(
-    auth_service: AuthService,
-    fake_redis: fakeredis.aioredis.FakeRedis,
+async def test_register_requires_email() -> None:
+    with pytest.raises(ValidationError):
+        RegisterRequest(  # type: ignore[call-arg]
+            phone="+2348087654321",
+            full_name="Jane Helper",
+            password="HelperPassword123!",
+            role="helper",
+        )
+
+
+@pytest.mark.asyncio
+async def test_register_email_dispatch_failure_rolls_back_phone_otp_and_db(
     mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
 ) -> None:
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_db.execute.return_value = mock_result
 
-    payload = RegisterRequest(
-        phone="+2348087654321",
-        full_name="Jane Helper",
-        password="HelperPassword123!",
-        role="helper",
-        email=None,
+    mock_notification_svc = AsyncMock()
+    mock_notification_svc.send_verification_email.side_effect = EmailDispatchError(
+        detail="SMTP failure"
     )
 
-    response = await auth_service.register(payload)
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+        notification_service=mock_notification_svc,
+    )
 
-    assert response.id is not None
-    assert response.phone == "2348087654321"
-    assert response.role == "helper"
-    assert response.is_phone_verified is False
-    assert mock_db.add.called
-    assert mock_db.commit.called
+    payload = RegisterRequest(
+        phone="+2348012345678",
+        email="john@example.com",
+        full_name="John Doe",
+        password="SecurePassword123!",
+        role="customer",
+    )
 
-    stored_otp = await fake_redis.get("otp:2348087654321")
-    assert stored_otp is not None
+    with pytest.raises(EmailDispatchError):
+        await service.register(payload)
+
+    phone = "2348012345678"
+    assert mock_db.rollback.called
+    assert not mock_db.commit.called
+    assert await fake_redis.get(f"otp:{phone}") is None
+    assert await fake_redis.get(f"otp:cooldown:{phone}") is None
 
 
 @pytest.mark.asyncio
@@ -173,6 +201,7 @@ async def test_register_send_otp_failure_rolls_back_db_transaction(
 
     payload = RegisterRequest(
         phone="+2348012345678",
+        email="john@example.com",
         full_name="John Doe",
         password="SecurePassword123!",
         role="customer",
@@ -204,6 +233,7 @@ async def test_register_db_commit_failure_cleans_up_redis_keys(
 
     payload = RegisterRequest(
         phone="+2348012345678",
+        email="john@example.com",
         full_name="John Doe",
         password="SecurePassword123!",
         role="customer",
@@ -218,6 +248,7 @@ async def test_register_db_commit_failure_cleans_up_redis_keys(
     assert await fake_redis.get(f"otp:cooldown:{phone}") is None
     rate = await fake_redis.get(f"otp:rate:{phone}")
     assert rate is None or int(rate) == 0
+    assert await fake_redis.keys("email_otp:*") == []
 
 
 @pytest.mark.asyncio
@@ -232,6 +263,7 @@ async def test_register_phone_already_exists_raises(
 
     payload = RegisterRequest(
         phone="+2348012345678",
+        email="john@example.com",
         full_name="John Doe",
         password="SecurePassword123!",
         role="customer",
@@ -276,11 +308,15 @@ async def test_login_success(
     mock_db: AsyncMock,
     settings: Settings,
 ) -> None:
+    from datetime import UTC, datetime
+
     user_id = uuid.uuid4()
     hashed = hash_password("ValidPassword123!")
     user = User(
         id=user_id,
         phone="+2348012345678",
+        email="john@example.com",
+        email_verified_at=datetime.now(UTC),
         full_name="John Doe",
         hashed_password=hashed,
         role="customer",
@@ -297,6 +333,33 @@ async def test_login_success(
     assert tokens.access_token is not None
     access_payload = decode_token(tokens.access_token, settings.JWT_ACCESS_SECRET)
     assert access_payload.sub == str(user_id)
+
+
+@pytest.mark.asyncio
+async def test_login_unverified_email_raises(
+    auth_service: AuthService,
+    mock_db: AsyncMock,
+) -> None:
+    user = User(
+        id=uuid.uuid4(),
+        phone="+2348012345678",
+        email="john@example.com",
+        email_verified_at=None,
+        full_name="John Doe",
+        hashed_password=hash_password("ValidPassword123!"),
+        role="customer",
+        is_active=True,
+        is_phone_verified=True,
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db.execute.return_value = mock_result
+
+    with pytest.raises(EmailNotVerifiedError) as exc_info:
+        await auth_service.login(LoginRequest(phone="+2348012345678", password="ValidPassword123!"))
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.code == "AUTH_EMAIL_NOT_VERIFIED"
 
 
 @pytest.mark.asyncio
@@ -431,6 +494,8 @@ async def test_verify_otp_success(
     mock_db: AsyncMock,
     settings: Settings,
 ) -> None:
+    from datetime import UTC, datetime
+
     phone = "2348012345678"
     otp = "123456"
     await fake_redis.set(f"otp:{phone}", otp)
@@ -439,6 +504,8 @@ async def test_verify_otp_success(
     user = User(
         id=user_id,
         phone=phone,
+        email="john@example.com",
+        email_verified_at=datetime.now(UTC),
         full_name="John Doe",
         hashed_password="hash",
         role="customer",
@@ -461,6 +528,35 @@ async def test_verify_otp_success(
 
 
 @pytest.mark.asyncio
+async def test_verify_otp_persists_phone_verification_but_blocks_tokens_if_email_unverified(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    mock_db: AsyncMock,
+) -> None:
+    phone = "2348012345678"
+    await fake_redis.set(f"otp:{phone}", "123456")
+
+    user = User(
+        id=uuid.uuid4(),
+        phone=phone,
+        email="john@example.com",
+        email_verified_at=None,
+        full_name="John Doe",
+        hashed_password="hash",
+        role="customer",
+        is_active=True,
+        is_phone_verified=False,
+    )
+    mock_db.execute.return_value = _db_returning(user)
+
+    with pytest.raises(EmailNotVerifiedError):
+        await auth_service.verify_otp(OTPVerifyRequest(phone=phone, otp="123456"))
+
+    assert user.is_phone_verified is True
+    assert await fake_redis.get(f"otp:{phone}") is None
+
+
+@pytest.mark.asyncio
 async def test_verify_otp_already_verified_user(
     auth_service: AuthService,
     fake_redis: fakeredis.aioredis.FakeRedis,
@@ -477,6 +573,8 @@ async def test_verify_otp_already_verified_user(
     user = User(
         id=user_id,
         phone=phone,
+        email="john@example.com",
+        email_verified_at=verified_at,
         full_name="John Doe",
         hashed_password="hash",
         role="customer",
@@ -625,9 +723,13 @@ async def _send_otp_like_router(service: AuthService, raw_phone: str) -> None:
 
 
 def _active_user(phone: str = CANONICAL_PHONE) -> User:
+    from datetime import UTC, datetime
+
     return User(
         id=uuid.uuid4(),
         phone=phone,
+        email="canonical@example.com",
+        email_verified_at=datetime.now(UTC),
         full_name="Canonical User",
         hashed_password="hash",
         role="customer",
@@ -852,7 +954,14 @@ async def test_verify_otp_consumes_the_code_on_success(
     mock_db: AsyncMock,
 ) -> None:
     """A redeemed code is single-use — otherwise the same code would replay."""
-    active = MagicMock(is_active=True, id=uuid.uuid4(), role="customer")
+    from datetime import UTC, datetime
+
+    active = MagicMock(
+        is_active=True,
+        id=uuid.uuid4(),
+        role="customer",
+        email_verified_at=datetime.now(UTC),
+    )
     mock_db.execute.return_value = _db_returning(active)
     await fake_redis.set(f"otp:{CANONICAL_PHONE}", "123456")
 
@@ -895,6 +1004,7 @@ async def test_register_stores_and_looks_up_the_canonical_phone(
     await auth_service.register(
         RegisterRequest(
             phone="0815 355 1975",
+            email="canonical@example.com",
             full_name="Canonical User",
             password="SecurePassword1!",
             role="customer",
@@ -916,9 +1026,13 @@ async def test_login_looks_up_the_canonical_phone(
     mock_db: AsyncMock,
 ) -> None:
     """A user registered as '0815…' can log in as '+234-…' — same DB value."""
+    from datetime import UTC, datetime
+
     user = User(
         id=uuid.uuid4(),
         phone=CANONICAL_PHONE,
+        email="john@example.com",
+        email_verified_at=datetime.now(UTC),
         full_name="John Doe",
         hashed_password=hash_password("ValidPassword123!"),
         role="customer",
@@ -1364,7 +1478,7 @@ async def test_send_otp_failure_decrements_rate_limit_counter(
 
 
 @pytest.mark.asyncio
-async def test_forgot_password_tier1_verified_email_with_phone_input(
+async def test_forgot_password_verified_email_sends_reset_token(
     mock_db: AsyncMock,
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
@@ -1392,7 +1506,7 @@ async def test_forgot_password_tier1_verified_email_with_phone_input(
         notification_service=mock_notif,
     )
 
-    payload = ForgotPasswordRequest(phone="08153551975")
+    payload = ForgotPasswordRequest(email="Verified@Example.com")
     response = await service.forgot_password(payload)
 
     assert isinstance(response, ForgotPasswordResponse)
@@ -1408,49 +1522,13 @@ async def test_forgot_password_tier1_verified_email_with_phone_input(
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     stored_user_id = await fake_redis.get(f"pwd_reset:token:{token_hash}")
     assert stored_user_id == str(user_id)
+    assert await fake_redis.get(f"pwd_reset:active:{user_id}") == token_hash
     ttl = await fake_redis.ttl(f"pwd_reset:token:{token_hash}")
     assert ttl == settings.PASSWORD_RESET_EXPIRE_MINUTES * 60
 
 
 @pytest.mark.asyncio
-async def test_forgot_password_tier1_verified_email_with_email_input(
-    mock_db: AsyncMock,
-    fake_redis: fakeredis.aioredis.FakeRedis,
-    settings: Settings,
-) -> None:
-    from datetime import UTC, datetime
-
-    user_id = uuid.uuid4()
-    user = User(
-        id=user_id,
-        phone="2348153551975",
-        email="verified@example.com",
-        email_verified_at=datetime.now(UTC),
-        full_name="Verified User",
-        hashed_password=hash_password("OldPassword123!"),
-        role="customer",
-        is_active=True,
-    )
-    mock_db.execute.return_value = _db_returning(user)
-
-    mock_notif = AsyncMock()
-    service = AuthService(
-        db=mock_db,
-        redis_client=fake_redis,
-        settings=settings,
-        notification_service=mock_notif,
-    )
-
-    payload = ForgotPasswordRequest(email="verified@example.com")
-    response = await service.forgot_password(payload)
-
-    assert isinstance(response, ForgotPasswordResponse)
-    mock_notif.send_password_reset_email.assert_awaited_once()
-    mock_notif.send_password_reset_sms.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_tier2_unverified_email_sends_sms_otp(
+async def test_forgot_password_unverified_email_blocked_anti_enumeration(
     mock_db: AsyncMock,
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
@@ -1476,21 +1554,58 @@ async def test_forgot_password_tier2_unverified_email_sends_sms_otp(
         notification_service=mock_notif,
     )
 
-    payload = ForgotPasswordRequest(phone="08153551975")
+    payload = ForgotPasswordRequest(email="unverified@example.com")
     response = await service.forgot_password(payload)
 
     assert isinstance(response, ForgotPasswordResponse)
-    mock_notif.send_password_reset_sms.assert_awaited_once()
+    assert "instructions have been sent" in response.message
+    mock_notif.send_password_reset_sms.assert_not_called()
     mock_notif.send_password_reset_email.assert_not_called()
+    assert await fake_redis.keys("pwd_reset:token:*") == []
 
-    sms_kwargs = mock_notif.send_password_reset_sms.call_args.kwargs
-    assert sms_kwargs["to"] == "2348153551975"
-    otp = sms_kwargs["otp"]
-    assert len(otp) == 6 and otp.isdigit()
 
-    otp_hash = hashlib.sha256(otp.encode("utf-8")).hexdigest()
-    stored_user_id = await fake_redis.get(f"pwd_reset:token:{otp_hash}")
-    assert stored_user_id == str(user_id)
+@pytest.mark.asyncio
+async def test_forgot_password_reissue_revokes_prior_token(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    from datetime import UTC, datetime
+
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        phone="2348153551975",
+        email="verified@example.com",
+        email_verified_at=datetime.now(UTC),
+        full_name="Verified User",
+        hashed_password=hash_password("OldPassword123!"),
+        role="customer",
+        is_active=True,
+    )
+    mock_db.execute.return_value = _db_returning(user)
+    mock_notif = AsyncMock()
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=settings,
+        notification_service=mock_notif,
+    )
+
+    await service.forgot_password(ForgotPasswordRequest(email="verified@example.com"))
+    first_token = mock_notif.send_password_reset_email.call_args_list[0].kwargs["token"]
+    first_hash = hashlib.sha256(first_token.encode("utf-8")).hexdigest()
+    assert await fake_redis.get(f"pwd_reset:token:{first_hash}") == str(user_id)
+
+    await fake_redis.delete("pwd_reset:cooldown:verified@example.com")
+    await service.forgot_password(ForgotPasswordRequest(email="verified@example.com"))
+    second_token = mock_notif.send_password_reset_email.call_args_list[1].kwargs["token"]
+    second_hash = hashlib.sha256(second_token.encode("utf-8")).hexdigest()
+
+    assert first_hash != second_hash
+    assert await fake_redis.get(f"pwd_reset:token:{first_hash}") is None
+    assert await fake_redis.get(f"pwd_reset:token:{second_hash}") == str(user_id)
+    assert await fake_redis.get(f"pwd_reset:active:{user_id}") == second_hash
 
 
 @pytest.mark.asyncio
@@ -1508,7 +1623,7 @@ async def test_forgot_password_non_existent_account_anti_enumeration(
         notification_service=mock_notif,
     )
 
-    payload = ForgotPasswordRequest(phone="08153551975")
+    payload = ForgotPasswordRequest(email="missing@example.com")
     response = await service.forgot_password(payload)
 
     assert isinstance(response, ForgotPasswordResponse)
@@ -1523,10 +1638,13 @@ async def test_forgot_password_inactive_user_anti_enumeration(
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
 ) -> None:
+    from datetime import UTC, datetime
+
     user = User(
         id=uuid.uuid4(),
         phone="2348153551975",
         email="inactive@example.com",
+        email_verified_at=datetime.now(UTC),
         full_name="Inactive User",
         hashed_password=hash_password("OldPassword123!"),
         role="customer",
@@ -1541,113 +1659,12 @@ async def test_forgot_password_inactive_user_anti_enumeration(
         notification_service=mock_notif,
     )
 
-    payload = ForgotPasswordRequest(phone="08153551975")
+    payload = ForgotPasswordRequest(email="inactive@example.com")
     response = await service.forgot_password(payload)
 
     assert isinstance(response, ForgotPasswordResponse)
     mock_notif.send_password_reset_email.assert_not_called()
     mock_notif.send_password_reset_sms.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_tier3_no_email_no_phone(
-    mock_db: AsyncMock,
-    fake_redis: fakeredis.aioredis.FakeRedis,
-    settings: Settings,
-) -> None:
-    user = User(
-        id=uuid.uuid4(),
-        phone="",
-        email=None,
-        email_verified_at=None,
-        full_name="Unreachable User",
-        hashed_password=hash_password("OldPassword123!"),
-        role="customer",
-        is_active=True,
-    )
-    mock_db.execute.return_value = _db_returning(user)
-    mock_notif = AsyncMock()
-    service = AuthService(
-        db=mock_db,
-        redis_client=fake_redis,
-        settings=settings,
-        notification_service=mock_notif,
-    )
-
-    payload = ForgotPasswordRequest(phone="08153551975")
-    response = await service.forgot_password(payload)
-
-    assert isinstance(response, ForgotPasswordResponse)
-    mock_notif.send_password_reset_email.assert_not_called()
-    mock_notif.send_password_reset_sms.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_mismatched_phone_and_email_returns_anti_enumeration(
-    mock_db: AsyncMock,
-    fake_redis: fakeredis.aioredis.FakeRedis,
-    settings: Settings,
-) -> None:
-    from datetime import UTC, datetime
-
-    user = User(
-        id=uuid.uuid4(),
-        phone="2348153551975",
-        email="real@example.com",
-        email_verified_at=datetime.now(UTC),
-        full_name="Real User",
-        hashed_password=hash_password("OldPassword123!"),
-        role="customer",
-        is_active=True,
-    )
-    mock_db.execute.return_value = _db_returning(user)
-    mock_notif = AsyncMock()
-    service = AuthService(
-        db=mock_db,
-        redis_client=fake_redis,
-        settings=settings,
-        notification_service=mock_notif,
-    )
-
-    payload = ForgotPasswordRequest(phone="08153551975", email="wrong@example.com")
-    response = await service.forgot_password(payload)
-
-    assert isinstance(response, ForgotPasswordResponse)
-    mock_notif.send_password_reset_email.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_matching_phone_and_email_sends_email(
-    mock_db: AsyncMock,
-    fake_redis: fakeredis.aioredis.FakeRedis,
-    settings: Settings,
-) -> None:
-    from datetime import UTC, datetime
-
-    user = User(
-        id=uuid.uuid4(),
-        phone="2348153551975",
-        email="match@example.com",
-        email_verified_at=datetime.now(UTC),
-        full_name="Match User",
-        hashed_password=hash_password("OldPassword123!"),
-        role="customer",
-        is_active=True,
-    )
-    mock_db.execute.return_value = _db_returning(user)
-    mock_notif = AsyncMock()
-    service = AuthService(
-        db=mock_db,
-        redis_client=fake_redis,
-        settings=settings,
-        notification_service=mock_notif,
-    )
-
-    payload = ForgotPasswordRequest(phone="08153551975", email="match@example.com")
-    response = await service.forgot_password(payload)
-
-    assert isinstance(response, ForgotPasswordResponse)
-    mock_notif.send_password_reset_email.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1656,7 +1673,7 @@ async def test_forgot_password_cooldown_raises_429(
     mock_db: AsyncMock,
 ) -> None:
     mock_db.execute.return_value = _db_returning(None)
-    payload = ForgotPasswordRequest(phone="08153551975")
+    payload = ForgotPasswordRequest(email="user@example.com")
 
     await auth_service.forgot_password(payload)
 
@@ -1675,14 +1692,14 @@ async def test_forgot_password_rate_limit_exceeded_raises_429(
     mock_db: AsyncMock,
 ) -> None:
     mock_db.execute.return_value = _db_returning(None)
-    canonical = "2348153551975"
-    payload = ForgotPasswordRequest(phone=canonical)
+    email = "user@example.com"
+    payload = ForgotPasswordRequest(email=email)
 
     for _ in range(3):
-        await fake_redis.delete(f"pwd_reset:cooldown:{canonical}")
+        await fake_redis.delete(f"pwd_reset:cooldown:{email}")
         await auth_service.forgot_password(payload)
 
-    await fake_redis.delete(f"pwd_reset:cooldown:{canonical}")
+    await fake_redis.delete(f"pwd_reset:cooldown:{email}")
     with pytest.raises(PasswordResetRateLimitError) as exc_info:
         await auth_service.forgot_password(payload)
 
@@ -1698,11 +1715,11 @@ async def test_forgot_password_rate_limit_not_masked_by_cooldown(
     mock_db: AsyncMock,
 ) -> None:
     mock_db.execute.return_value = _db_returning(None)
-    canonical = "2348153551975"
-    payload = ForgotPasswordRequest(phone=canonical)
+    email = "user@example.com"
+    payload = ForgotPasswordRequest(email=email)
 
     for _ in range(3):
-        await fake_redis.delete(f"pwd_reset:cooldown:{canonical}")
+        await fake_redis.delete(f"pwd_reset:cooldown:{email}")
         await auth_service.forgot_password(payload)
 
     with pytest.raises(PasswordResetRateLimitError) as exc_info:
@@ -1718,8 +1735,8 @@ async def test_forgot_password_rate_limit_exceeded_post_increment_deletes_cooldo
 ) -> None:
     from unittest.mock import AsyncMock, patch
 
-    phone = "2348153551975"
-    payload = ForgotPasswordRequest(phone=phone)
+    email = "user@example.com"
+    payload = ForgotPasswordRequest(email=email)
     with patch.object(
         fake_redis,
         "incr",
@@ -1730,7 +1747,7 @@ async def test_forgot_password_rate_limit_exceeded_post_increment_deletes_cooldo
             await auth_service.forgot_password(payload)
 
         assert exc_info.value.code == "AUTH_PASSWORD_RESET_RATE_LIMITED"
-        assert await fake_redis.get(f"pwd_reset:cooldown:{phone}") is None
+        assert await fake_redis.get(f"pwd_reset:cooldown:{email}") is None
 
 
 @pytest.mark.asyncio
@@ -1743,11 +1760,12 @@ async def test_forgot_password_ip_rate_limit_exceeded_raises_429(
     ip = "192.168.1.100"
 
     for i in range(10):
-        payload = ForgotPasswordRequest(phone=f"0815355197{i}")
-        await fake_redis.delete(f"pwd_reset:cooldown:234815355197{i}")
+        email = f"user{i}@example.com"
+        payload = ForgotPasswordRequest(email=email)
+        await fake_redis.delete(f"pwd_reset:cooldown:{email}")
         await auth_service.forgot_password(payload, ip=ip)
 
-    payload_11 = ForgotPasswordRequest(phone="08153551980")
+    payload_11 = ForgotPasswordRequest(email="user10@example.com")
     with pytest.raises(PasswordResetRateLimitError) as exc_info:
         await auth_service.forgot_password(payload_11, ip=ip)
 
@@ -1792,43 +1810,7 @@ async def test_forgot_password_email_dispatch_failure_rolls_back_redis(
     assert await fake_redis.get("pwd_reset:cooldown:verified@example.com") is None
     rate = await fake_redis.get("pwd_reset:rate:verified@example.com")
     assert rate is None or int(rate) == 0
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_sms_dispatch_failure_rolls_back_redis(
-    mock_db: AsyncMock,
-    fake_redis: fakeredis.aioredis.FakeRedis,
-    settings: Settings,
-) -> None:
-    user = User(
-        id=uuid.uuid4(),
-        phone="2348153551975",
-        email=None,
-        email_verified_at=None,
-        full_name="User",
-        hashed_password=hash_password("OldPassword123!"),
-        role="customer",
-        is_active=True,
-    )
-    mock_db.execute.return_value = _db_returning(user)
-
-    mock_notif = AsyncMock()
-    mock_notif.send_password_reset_sms.side_effect = SMSDispatchError(detail="SMS gateway failure")
-    service = AuthService(
-        db=mock_db,
-        redis_client=fake_redis,
-        settings=settings,
-        notification_service=mock_notif,
-    )
-
-    payload = ForgotPasswordRequest(phone="08153551975")
-    with pytest.raises(SMSDispatchError):
-        await service.forgot_password(payload)
-
-    canonical = "2348153551975"
-    assert await fake_redis.get(f"pwd_reset:cooldown:{canonical}") is None
-    rate = await fake_redis.get(f"pwd_reset:rate:{canonical}")
-    assert rate is None or int(rate) == 0
+    assert await fake_redis.keys("pwd_reset:token:*") == []
 
 
 @pytest.mark.asyncio
@@ -2077,10 +2059,14 @@ async def test_reset_password_allows_login_and_refresh_within_same_second(
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
 ) -> None:
+    from datetime import UTC, datetime
+
     user_id = uuid.uuid4()
     user = User(
         id=user_id,
         phone="2348153551975",
+        email="user@example.com",
+        email_verified_at=datetime.now(UTC),
         full_name="User",
         hashed_password=hash_password("OldPassword123!"),
         role="customer",
@@ -2107,17 +2093,16 @@ async def test_reset_password_allows_login_and_refresh_within_same_second(
 def test_forgot_password_request_validation() -> None:
     from pydantic import ValidationError
 
-    # Valid with phone
-    req_phone = ForgotPasswordRequest(phone="08153551975")
-    assert req_phone.phone == "2348153551975"
-
     # Valid with email
     req_email = ForgotPasswordRequest(email="user@test.com")
     assert req_email.email == "user@test.com"
 
-    # Missing both phone and email raises validation error
+    # Missing email or invalid email raises validation error
     with pytest.raises(ValidationError):
-        ForgotPasswordRequest()
+        ForgotPasswordRequest()  # type: ignore[call-arg]
+
+    with pytest.raises(ValidationError):
+        ForgotPasswordRequest(email="not-an-email")
 
 
 def test_reset_password_request_validation() -> None:
@@ -2147,37 +2132,77 @@ def test_reset_password_request_validation() -> None:
     req_strip = ResetPasswordRequest(token="  token123  ", new_password="ValidPassword123!")
     assert req_strip.token == "token123"
 
-    # Optional phone field works
-    req_with_phone = ResetPasswordRequest(
-        token="token123",
-        new_password="ValidPassword123!",
-        phone="08153551975",
-    )
-    assert req_with_phone.phone == "2348153551975"
-
 
 @pytest.mark.asyncio
-async def test_forgot_password_rollback_acquired_identifiers_when_second_fails(
+async def test_send_email_otp_anti_enumeration_for_missing_or_verified_user(
     auth_service: AuthService,
     fake_redis: fakeredis.aioredis.FakeRedis,
+    mock_db: AsyncMock,
 ) -> None:
-    # Pre-set rate limit for email so it fails
-    email = "rate_limited@example.com"
-    phone = "2348153551975"
-    await fake_redis.set(f"pwd_reset:rate:{email}", "3")
+    from datetime import UTC, datetime
 
-    payload = ForgotPasswordRequest(phone=phone, email=email)
-    with pytest.raises(PasswordResetRateLimitError):
-        await auth_service.forgot_password(payload)
+    mock_db.execute.return_value = _db_returning(None)
+    await auth_service.send_email_otp("nobody@example.com")
+    assert await fake_redis.keys("email_otp:*") == []
 
-    # Phone cooldown must be rolled back and rate counter decremented
-    assert await fake_redis.get(f"pwd_reset:cooldown:{phone}") is None
-    phone_rate = await fake_redis.get(f"pwd_reset:rate:{phone}")
-    assert phone_rate is None or int(phone_rate) == 0
+    verified_user = User(
+        id=uuid.uuid4(),
+        phone=CANONICAL_PHONE,
+        email="verified@example.com",
+        email_verified_at=datetime.now(UTC),
+        full_name="Verified",
+        hashed_password="hash",
+        role="customer",
+        is_active=True,
+    )
+    mock_db.execute.return_value = _db_returning(verified_user)
+    await auth_service.send_email_otp("verified@example.com")
+    assert await fake_redis.keys("email_otp:*") == []
 
 
 @pytest.mark.asyncio
-async def test_reset_password_phone_scoped_token_success(
+async def test_verify_email_otp_success_and_wrong_code_and_missing_user(
+    auth_service: AuthService,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    mock_db: AsyncMock,
+) -> None:
+    mock_db.execute.return_value = _db_returning(None)
+    with pytest.raises(EmailOTPExpiredError):
+        await auth_service.verify_email_otp(
+            VerifyEmailOTPRequest(email="missing@example.com", otp="123456")
+        )
+
+    user = User(
+        id=uuid.uuid4(),
+        phone=CANONICAL_PHONE,
+        email="user@example.com",
+        email_verified_at=None,
+        full_name="User",
+        hashed_password="hash",
+        role="customer",
+        is_active=True,
+        is_phone_verified=True,
+    )
+    mock_db.execute.return_value = _db_returning(user)
+    await auth_service.send_email_otp("user@example.com")
+    stored_otp = await fake_redis.get(f"email_otp:{user.id}")
+    assert stored_otp is not None
+
+    with pytest.raises(InvalidEmailOTPError):
+        await auth_service.verify_email_otp(
+            VerifyEmailOTPRequest(email="user@example.com", otp="000000")
+        )
+
+    tokens = await auth_service.verify_email_otp(
+        VerifyEmailOTPRequest(email="USER@example.com", otp=str(stored_otp))
+    )
+    assert tokens.access_token is not None
+    assert user.email_verified_at is not None
+    assert await fake_redis.get(f"email_otp:{user.id}") is None
+
+
+@pytest.mark.asyncio
+async def test_reset_password_clears_active_token_pointer(
     mock_db: AsyncMock,
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
@@ -2186,6 +2211,7 @@ async def test_reset_password_phone_scoped_token_success(
     user = User(
         id=user_id,
         phone="2348153551975",
+        email="user@example.com",
         full_name="User",
         hashed_password=hash_password("OldPassword123!"),
         role="customer",
@@ -2193,50 +2219,17 @@ async def test_reset_password_phone_scoped_token_success(
     )
     mock_db.get.return_value = user
 
-    raw_token = "otp_token_phone_scoped"
-    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-    await fake_redis.set(f"pwd_reset:token:2348153551975:{token_hash}", str(user_id))
-
-    service = AuthService(db=mock_db, redis_client=fake_redis, settings=settings)
-    payload = ResetPasswordRequest(
-        token=raw_token,
-        phone="08153551975",
-        new_password="NewSecurePassword123!",
-    )
-    res = await service.reset_password(payload)
-    assert res.message == "Password has been reset successfully."
-    assert await fake_redis.get(f"pwd_reset:token:2348153551975:{token_hash}") is None
-
-
-@pytest.mark.asyncio
-async def test_reset_password_mismatched_phone_fails(
-    mock_db: AsyncMock,
-    fake_redis: fakeredis.aioredis.FakeRedis,
-    settings: Settings,
-) -> None:
-    user_id = uuid.uuid4()
-    user = User(
-        id=user_id,
-        phone="2348153551975",
-        full_name="User",
-        hashed_password=hash_password("OldPassword123!"),
-        role="customer",
-        is_active=True,
-    )
-    mock_db.get.return_value = user
-
-    raw_token = "any_token"
+    raw_token = "active_pointer_token"
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     await fake_redis.set(f"pwd_reset:token:{token_hash}", str(user_id))
+    await fake_redis.set(f"pwd_reset:active:{user_id}", token_hash)
 
     service = AuthService(db=mock_db, redis_client=fake_redis, settings=settings)
-    payload = ResetPasswordRequest(
-        token=raw_token,
-        phone="08011112222",  # Different phone from user.phone
-        new_password="NewSecurePassword123!",
+    res = await service.reset_password(
+        ResetPasswordRequest(token=raw_token, new_password="NewSecurePassword123!")
     )
-    with pytest.raises(InvalidPasswordResetTokenError):
-        await service.reset_password(payload)
+    assert res.message == "Password has been reset successfully."
+    assert await fake_redis.get(f"pwd_reset:active:{user_id}") is None
 
 
 @pytest.mark.asyncio
@@ -2318,12 +2311,12 @@ def test_generate_otp_honors_dev_static_otp_only_outside_production(
 
 
 @pytest.mark.asyncio
-async def test_send_otp_and_forgot_password_use_dev_static_otp(
+async def test_send_otp_and_send_email_otp_use_dev_static_otp(
     mock_db: AsyncMock,
     fake_redis: fakeredis.aioredis.FakeRedis,
     settings: Settings,
 ) -> None:
-    """AuthService.send_otp and forgot_password Tier 2 SMS both honor DEV_STATIC_OTP."""
+    """AuthService.send_otp and send_email_otp both honor DEV_STATIC_OTP."""
     dev_settings = settings.model_copy(
         update={"ENVIRONMENT": "staging", "DEV_STATIC_OTP": "123456"}
     )
@@ -2339,13 +2332,10 @@ async def test_send_otp_and_forgot_password_use_dev_static_otp(
         hashed_password=hash_password("OldPassword123!"),
         role="customer",
         is_active=True,
-        email=None,
+        email="dev@example.com",
         email_verified_at=None,
     )
-    lookup_result = MagicMock()
-    lookup_result.scalar_one_or_none.return_value = user
-    mock_db.execute.return_value = lookup_result
+    mock_db.execute.return_value = _db_returning(user)
 
-    await service.forgot_password(ForgotPasswordRequest(phone="08153551975"))
-    expected_hash = hashlib.sha256(b"123456").hexdigest()
-    assert await fake_redis.get(f"pwd_reset:token:{expected_hash}") == str(user.id)
+    await service.send_email_otp("dev@example.com")
+    assert await fake_redis.get(f"email_otp:{user.id}") == "123456"

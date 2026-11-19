@@ -135,6 +135,13 @@ class PhoneNotVerifiedError(UrgentHelpError):
 
 
 @dataclass
+class EmailNotVerifiedError(UrgentHelpError):
+    code: str = "AUTH_EMAIL_NOT_VERIFIED"
+    detail: str = "Email address is not verified. Please verify your email address via OTP."
+    status_code: int = status.HTTP_403_FORBIDDEN
+
+
+@dataclass
 class InvalidPasswordResetTokenError(UrgentHelpError):
     code: str = "AUTH_INVALID_RESET_TOKEN"
     detail: str = "The password reset token is invalid or has expired."
@@ -152,6 +159,13 @@ class PasswordResetCooldownError(UrgentHelpError):
 class PasswordResetRateLimitError(UrgentHelpError):
     code: str = "AUTH_PASSWORD_RESET_RATE_LIMITED"
     detail: str = "Too many password reset requests. Please try again later."
+    status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
+
+
+@dataclass
+class PhoneCheckRateLimitError(UrgentHelpError):
+    code: str = "AUTH_PHONE_CHECK_RATE_LIMITED"
+    detail: str = "Too many phone check requests. Please try again later."
     status_code: int = status.HTTP_429_TOO_MANY_REQUESTS
 
 

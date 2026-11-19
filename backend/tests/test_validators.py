@@ -116,6 +116,7 @@ def test_db_constraint_rejects_malformed_phone_forms(phone: str) -> None:
 def test_register_schema_normalizes_local_phone() -> None:
     req = RegisterRequest(
         phone="08153551975",
+        email="test@example.com",
         full_name="Test User",
         password="SecurePassword1!",
         role="customer",
@@ -317,6 +318,7 @@ def test_every_phone_schema_collapses_every_format_to_one_value(
     assert (
         RegisterRequest(
             phone=raw_input,
+            email="test@example.com",
             full_name="Test User",
             password="SecurePassword1!",
             role="customer",
@@ -345,6 +347,7 @@ def test_register_rejects_passwords_failing_the_policy(weak_password: str) -> No
     with pytest.raises(ValidationError) as raised:
         RegisterRequest(
             phone="08153551975",
+            email="test@example.com",
             full_name="Test User",
             password=weak_password,
             role="customer",
@@ -359,6 +362,7 @@ def test_register_rejects_passwords_failing_the_policy(weak_password: str) -> No
 def test_register_accepts_passwords_meeting_the_policy(strong_password: str) -> None:
     request = RegisterRequest(
         phone="08153551975",
+        email="test@example.com",
         full_name="Test User",
         password=strong_password,
         role="customer",
@@ -376,6 +380,7 @@ def test_register_password_length_bounds(candidate: str) -> None:
     with pytest.raises(ValidationError) as raised:
         RegisterRequest(
             phone="08153551975",
+            email="test@example.com",
             full_name="Test User",
             password=candidate,
             role="customer",
@@ -389,6 +394,7 @@ def test_register_accepts_password_at_the_maximum_length() -> None:
     assert (
         RegisterRequest(
             phone="08153551975",
+            email="test@example.com",
             full_name="Test User",
             password=candidate,
             role="customer",

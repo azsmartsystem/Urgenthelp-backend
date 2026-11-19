@@ -18,6 +18,8 @@ from app.modules.notifications.service import (
 )
 from app.modules.users.schemas import (
     EmailVerificationResponse,
+    IdentityDocumentType,
+    IdentityVerificationResponse,
     UpdateEmailRequest,
     UpdateProfileRequest,
     UserProfileResponse,
@@ -25,7 +27,7 @@ from app.modules.users.schemas import (
     VerifyEmailResponse,
 )
 from app.modules.users.service import UserService
-from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -165,4 +167,19 @@ async def verify_email(
     return await service.verify_email(
         user_id=_parse_user_id(current_user),
         payload=payload,
+    )
+
+
+@router.post("/verify-identity", response_model=IdentityVerificationResponse, status_code=201)
+async def submit_identity_verification(
+    document_type: Annotated[IdentityDocumentType, Form(...)],
+    file: Annotated[UploadFile, File(...)],
+    current_user: Annotated[TokenPayload, Depends(get_current_user)],
+    service: Annotated[UserService, Depends(_get_service)],
+) -> IdentityVerificationResponse:
+    """Upload a government ID document (JPEG/PNG/PDF, max 5MB) for admin verification."""
+    return await service.submit_identity_verification(
+        user_id=_parse_user_id(current_user),
+        document_type=document_type,
+        file=file,
     )

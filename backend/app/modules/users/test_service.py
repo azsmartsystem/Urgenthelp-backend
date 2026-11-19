@@ -569,7 +569,7 @@ def test_verify_email_request_schema_accepts_valid_six_digit_otp() -> None:
 
 
 def test_mask_email_handles_various_formats() -> None:
-    from app.modules.users.service import _mask_email
+    from app.core.email_verification import mask_email as _mask_email
 
     assert _mask_email("user@example.com") == "u***@example.com"
     assert _mask_email("a@b.com") == "***@b.com"
@@ -1115,3 +1115,95 @@ async def test_upload_profile_photo_not_found_and_inactive(
     mock_db.get.return_value = _make_user(user_id=user_id, is_active=False)
     with pytest.raises(InactiveUserError):
         await user_service.upload_profile_photo(user_id, _FakeUploadStream(png_bytes))
+
+
+# ─── Identity Verification Upload Tests ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_submit_identity_verification_accepts_pdf_and_resets_verified_flag(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    from datetime import UTC
+
+    from app.modules.users.model import IdentityVerification
+
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id)
+    user.is_id_verified = True
+    mock_db.get.return_value = user
+
+    async def _fake_refresh(obj: IdentityVerification) -> None:
+        obj.id = uuid.uuid4()
+        obj.created_at = datetime.now(UTC)
+
+    mock_db.refresh = AsyncMock(side_effect=_fake_refresh)
+
+    pdf_bytes = b"%PDF-1.7\n%mock government id\n"
+    res = await user_service.submit_identity_verification(
+        user_id=user_id,
+        document_type="nin",
+        file=_FakeUploadStream(pdf_bytes),
+    )
+
+    assert res.user_id == user_id
+    assert res.document_type == "nin"
+    assert res.status == "pending"
+    assert res.document_url.startswith(f"identity-docs/{user_id}/")
+    assert res.document_url.endswith(".pdf")
+    assert user.is_id_verified is False
+    assert res.document_url in storage_backend._objects
+    mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_submit_identity_verification_rejects_webp_and_oversized(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    mock_db.get.return_value = _make_user(user_id=user_id)
+
+    webp_bytes = b"RIFF\x24\x00\x00\x00WEBP" + b"\x00" * 16
+    with pytest.raises(UnsupportedMediaTypeError):
+        await user_service.submit_identity_verification(
+            user_id=user_id,
+            document_type="drivers_license",
+            file=_FakeUploadStream(webp_bytes),
+        )
+
+    oversized_pdf = b"%PDF-1.7\n" + b"0" * MAX_PROFILE_PHOTO_BYTES
+    with pytest.raises(FileTooLargeError):
+        await user_service.submit_identity_verification(
+            user_id=user_id,
+            document_type="international_passport",
+            file=_FakeUploadStream(oversized_pdf),
+        )
+
+    assert storage_backend._objects == {}
+    mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_identity_verification_cleans_up_orphan_on_commit_failure(
+    user_service: UserService,
+    mock_db: AsyncMock,
+    storage_backend: InMemoryStorageBackend,
+) -> None:
+    user_id = uuid.uuid4()
+    mock_db.get.return_value = _make_user(user_id=user_id)
+    mock_db.commit.side_effect = RuntimeError("DB failure")
+
+    jpeg_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+    with pytest.raises(RuntimeError, match="DB failure"):
+        await user_service.submit_identity_verification(
+            user_id=user_id,
+            document_type="voters_card",
+            file=_FakeUploadStream(jpeg_bytes),
+        )
+
+    assert storage_backend._objects == {}
+    mock_db.rollback.assert_awaited_once()

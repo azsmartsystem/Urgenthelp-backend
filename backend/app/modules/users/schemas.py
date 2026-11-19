@@ -106,3 +106,24 @@ class VerifyEmailResponse(AppBaseModel):
     message: str = Field(default="Email verified successfully")
     email: EmailStr
     verified_at: datetime
+
+
+IdentityDocumentType = Literal[
+    "nin",
+    "drivers_license",
+    "voters_card",
+    "international_passport",
+]
+
+VerificationStatus = Literal["pending", "approved", "rejected"]
+
+
+class IdentityVerificationResponse(AppBaseModel):
+    """Submitted government ID verification record."""
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    document_type: IdentityDocumentType
+    status: VerificationStatus
+    document_url: str
+    created_at: datetime

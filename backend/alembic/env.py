@@ -10,6 +10,7 @@ from logging.config import fileConfig
 # here whenever you add a model.py.
 import app.modules.bookings.model
 import app.modules.categories.model
+import app.modules.helpers.model
 import app.modules.notifications.model
 import app.modules.users.model  # noqa: F401
 from alembic import context
