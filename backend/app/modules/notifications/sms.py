@@ -165,14 +165,33 @@ class TwilioSMSProvider:
             ) from exc
 
         if not response.is_success:
+            try:
+                raw_data = response.json()
+                error_data: dict[str, object] = (
+                    cast(dict[str, object], raw_data) if isinstance(raw_data, dict) else {}
+                )
+            except Exception:
+                error_data = {}
+
+            twilio_code = error_data.get("code")
+            twilio_message = str(error_data.get("message", ""))[:200] or None
+
             logger.error(
                 "twilio_dispatch_failed",
                 status_code=response.status_code,
                 phone=f"...{to[-4:]}",
+                twilio_code=twilio_code,
+                twilio_message=twilio_message,
             )
+            context: dict[str, object] = {
+                "provider": "twilio",
+                "status_code": response.status_code,
+            }
+            if twilio_code is not None:
+                context["twilio_code"] = twilio_code
             raise SMSDispatchError(
                 detail="SMS delivery failed via provider.",
-                context={"provider": "twilio", "status_code": response.status_code},
+                context=context,
             )
 
         logger.info("twilio_sms_dispatched", phone=f"...{to[-4:]}")

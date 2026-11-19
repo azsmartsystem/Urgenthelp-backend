@@ -184,7 +184,10 @@ async def test_twilio_sms_provider_success() -> None:
 @pytest.mark.asyncio
 async def test_twilio_sms_provider_http_failure() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, json={"message": "Invalid From number"})
+        return httpx.Response(
+            400,
+            json={"code": 21608, "message": "The number +2348153551975 is unverified."},
+        )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
@@ -194,8 +197,29 @@ async def test_twilio_sms_provider_http_failure() -> None:
             from_number="+1234567890",
             client=client,
         )
-        with pytest.raises(SMSDispatchError):
+        with pytest.raises(SMSDispatchError) as exc_info:
             await provider.send_sms(CANONICAL_PHONE, "Test message")
+        assert exc_info.value.context.get("status_code") == 400
+        assert exc_info.value.context.get("twilio_code") == 21608
+
+
+@pytest.mark.asyncio
+async def test_twilio_sms_provider_http_failure_non_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="Bad Gateway")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioSMSProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            from_number="+1234567890",
+            client=client,
+        )
+        with pytest.raises(SMSDispatchError) as exc_info:
+            await provider.send_sms(CANONICAL_PHONE, "Test message")
+        assert exc_info.value.context.get("status_code") == 502
+        assert "twilio_code" not in exc_info.value.context
 
 
 @pytest.mark.asyncio
