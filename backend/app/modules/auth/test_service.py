@@ -10,7 +10,6 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     EmailAlreadyRegisteredError,
     EmailDispatchError,
-    EmailNotVerifiedError,
     EmailOTPExpiredError,
     ForbiddenError,
     InactiveUserError,
@@ -343,7 +342,7 @@ async def test_login_success(
 
 
 @pytest.mark.asyncio
-async def test_login_unverified_email_raises(
+async def test_login_unverified_email_succeeds_with_tokens(
     auth_service: AuthService,
     mock_db: AsyncMock,
 ) -> None:
@@ -362,11 +361,11 @@ async def test_login_unverified_email_raises(
     mock_result.scalar_one_or_none.return_value = user
     mock_db.execute.return_value = mock_result
 
-    with pytest.raises(EmailNotVerifiedError) as exc_info:
-        await auth_service.login(LoginRequest(phone="+2348012345678", password="ValidPassword123!"))
-
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.code == "AUTH_EMAIL_NOT_VERIFIED"
+    tokens = await auth_service.login(
+        LoginRequest(phone="+2348012345678", password="ValidPassword123!")
+    )
+    assert tokens.access_token is not None
+    assert tokens.refresh_token is not None
 
 
 @pytest.mark.asyncio
@@ -535,7 +534,7 @@ async def test_verify_otp_success(
 
 
 @pytest.mark.asyncio
-async def test_verify_otp_persists_phone_verification_but_blocks_tokens_if_email_unverified(
+async def test_verify_otp_unverified_email_succeeds_and_issues_tokens(
     auth_service: AuthService,
     fake_redis: fakeredis.aioredis.FakeRedis,
     mock_db: AsyncMock,
@@ -556,11 +555,12 @@ async def test_verify_otp_persists_phone_verification_but_blocks_tokens_if_email
     )
     mock_db.execute.return_value = _db_returning(user)
 
-    with pytest.raises(EmailNotVerifiedError):
-        await auth_service.verify_otp(OTPVerifyRequest(phone=phone, otp="123456"))
+    tokens = await auth_service.verify_otp(OTPVerifyRequest(phone=phone, otp="123456"))
 
     assert user.is_phone_verified is True
     assert await fake_redis.get(f"otp:{phone}") is None
+    assert tokens.access_token is not None
+    assert tokens.refresh_token is not None
 
 
 @pytest.mark.asyncio

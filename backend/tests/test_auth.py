@@ -227,7 +227,7 @@ async def test_api_login_unverified_phone_returns_403(
 
 
 @pytest.mark.asyncio
-async def test_api_login_unverified_email_returns_403(
+async def test_api_login_unverified_email_succeeds(
     auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
 ) -> None:
     client, mock_db, _ = auth_client
@@ -250,8 +250,10 @@ async def test_api_login_unverified_email_returns_403(
         "/api/v1/auth/login",
         json={"phone": "+2348011112222", "password": "StrongPassword123!"},
     )
-    assert response.status_code == 403
-    assert response.json()["code"] == "AUTH_EMAIL_NOT_VERIFIED"
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" in data
+    assert "refresh_token" in data
 
 
 @pytest.mark.asyncio
@@ -568,18 +570,20 @@ async def test_api_full_registration_verification_login_flow(
     assert login_fail_res.status_code == 403
     assert login_fail_res.json()["code"] == "AUTH_PHONE_NOT_VERIFIED"
 
-    # 3. Verify phone OTP -> phone verified, blocked on unverified email (no tokens yet)
+    # 3. Verify phone OTP -> phone verified and tokens issued in phone-first auth!
     verify_payload = {"phone": "08012345678", "otp": str(otp)}
     verify_res = await client.post("/api/v1/auth/otp/verify", json=verify_payload)
-    assert verify_res.status_code == 403
-    assert verify_res.json()["code"] == "AUTH_EMAIL_NOT_VERIFIED"
+    assert verify_res.status_code == 200
+    phone_tokens = verify_res.json()
+    assert "access_token" in phone_tokens
+    assert "refresh_token" in phone_tokens
     assert user_created.is_phone_verified is True
     assert user_created.phone_verified_at is not None
 
-    # 4. Password login still blocked until email is verified -> 403 AUTH_EMAIL_NOT_VERIFIED
+    # 4. Password login succeeds with unverified email -> 200 OK
     login_unverified_email = await client.post("/api/v1/auth/login", json=login_payload)
-    assert login_unverified_email.status_code == 403
-    assert login_unverified_email.json()["code"] == "AUTH_EMAIL_NOT_VERIFIED"
+    assert login_unverified_email.status_code == 200
+    assert "access_token" in login_unverified_email.json()
 
     # 5. Verify email OTP -> 200 OK with tokens
     email_verify_res = await client.post(

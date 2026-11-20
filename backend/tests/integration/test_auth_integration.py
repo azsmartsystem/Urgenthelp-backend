@@ -42,17 +42,18 @@ async def test_auth_full_lifecycle_register_verify_login_refresh_logout(
     assert check_after.status_code == 200
     assert check_after.json() == {"phone": "2348031112233", "is_registered": True}
 
-    # 4. Verify phone OTP first -> still blocked until email is also verified
+    # 4. Verify phone OTP first -> tokens issued immediately in phone-first auth!
     sms_otp = await redis.get("otp:2348031112233")
     assert sms_otp is not None
     phone_verify_res = await client.post(
         "/api/v1/auth/otp/verify",
         json={"phone": "+2348031112233", "otp": str(sms_otp)},
     )
-    assert phone_verify_res.status_code == 403
-    assert phone_verify_res.json()["code"] == "AUTH_EMAIL_NOT_VERIFIED"
+    assert phone_verify_res.status_code == 200
+    phone_tokens = phone_verify_res.json()
+    assert "access_token" in phone_tokens and "refresh_token" in phone_tokens
 
-    # 5. Verify email OTP -> both verified, tokens issued!
+    # 5. Verify email OTP -> marks email verified and also returns tokens
     email_otp = await redis.get(f"email_otp:{user_id}")
     assert email_otp is not None
     email_verify_res = await client.post(
@@ -176,10 +177,8 @@ async def test_send_otp_already_verified_user_rejected_by_real_postgres(
     otp = await redis.get(f"otp:{canonical}")
     assert otp is not None
     v_res = await client.post("/api/v1/auth/otp/verify", json={"phone": phone, "otp": str(otp)})
-    # Email is not verified yet, so verify returns 403 AUTH_EMAIL_NOT_VERIFIED,
-    # but phone is marked verified in DB!
-    assert v_res.status_code == 403
-    assert v_res.json()["code"] == "AUTH_EMAIL_NOT_VERIFIED"
+    assert v_res.status_code == 200
+    assert "access_token" in v_res.json()
 
     # Now attempt to send OTP again for the phone-verified user -> 400 AUTH_PHONE_ALREADY_VERIFIED
     res = await client.post("/api/v1/auth/otp/send", json={"phone": phone})

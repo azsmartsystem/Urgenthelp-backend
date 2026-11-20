@@ -21,7 +21,6 @@ from app.core.email_verification import (
 )
 from app.core.exceptions import (
     EmailAlreadyRegisteredError,
-    EmailNotVerifiedError,
     EmailOTPExpiredError,
     InactiveUserError,
     InvalidCredentialsError,
@@ -193,9 +192,6 @@ class AuthService:
                 context={"phone": payload.phone[-4:], "user_id": str(user.id)}
             )
 
-        if user.email_verified_at is None:
-            raise EmailNotVerifiedError(context={"user_id": str(user.id)})
-
         logger.info("user_logged_in", user_id=str(user.id), role=user.role)
         access_token = create_access_token(user.id, user.role, self._settings)
         refresh_token = create_refresh_token(user.id, user.role, self._settings)
@@ -336,9 +332,6 @@ class AuthService:
         # Consume the code only once verification is persisted and account is known good.
         # If DB commit fails, the OTP remains in Redis for the user to retry.
         await self._redis.delete(redis_key)
-
-        if user.email_verified_at is None:
-            raise EmailNotVerifiedError(context={"user_id": str(user.id)})
 
         logger.info("otp_verified", user_id=str(user.id), role=user.role)
         access_token = create_access_token(user.id, user.role, self._settings)
