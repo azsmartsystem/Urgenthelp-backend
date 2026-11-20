@@ -123,3 +123,66 @@ async def test_phone_check_real_redis_sliding_window_rate_limit(
     )
     assert blocked.status_code == 429
     assert blocked.json()["code"] == "AUTH_PHONE_CHECK_RATE_LIMITED"
+
+
+@pytest.mark.asyncio
+async def test_send_otp_unregistered_phone_rejected_by_real_postgres(
+    integration_client: tuple[AsyncClient, AsyncSession, aioredis.Redis, InMemoryStorageBackend],
+) -> None:
+    """Verify POST /api/v1/auth/otp/send rejects unregistered numbers before hitting SMS gateway."""
+    client, _, redis, _ = integration_client
+    unregistered_phone = "0819 888 7766"
+    canonical = "2348198887766"
+
+    # Ensure pre-check confirms unregistered
+    check = await client.post("/api/v1/auth/phone/check", json={"phone": unregistered_phone})
+    assert check.status_code == 200
+    assert check.json()["is_registered"] is False
+
+    # Attempt to send OTP -> rejected with 404 USER_NOT_FOUND
+    res = await client.post("/api/v1/auth/otp/send", json={"phone": unregistered_phone})
+    assert res.status_code == 404
+    body = res.json()
+    assert body["code"] == "USER_NOT_FOUND"
+
+    # No OTP or cooldown stored in Redis
+    assert await redis.get(f"otp:{canonical}") is None
+    assert await redis.get(f"otp:cooldown:{canonical}") is None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_already_verified_user_rejected_by_real_postgres(
+    integration_client: tuple[AsyncClient, AsyncSession, aioredis.Redis, InMemoryStorageBackend],
+) -> None:
+    """Verify POST /api/v1/auth/otp/send rejects users whose phone is already verified."""
+    client, _, redis, _ = integration_client
+    phone = "0819 555 4433"
+    canonical = "2348195554433"
+
+    # Register user
+    reg = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "phone": phone,
+            "email": "verified.user@example.com",
+            "full_name": "Verified User",
+            "role": "customer",
+            "password": "StrongPassword123!",
+        },
+    )
+    assert reg.status_code == 201
+
+    # Verify phone with the initial registration OTP
+    otp = await redis.get(f"otp:{canonical}")
+    assert otp is not None
+    v_res = await client.post("/api/v1/auth/otp/verify", json={"phone": phone, "otp": str(otp)})
+    # Email is not verified yet, so verify returns 403 AUTH_EMAIL_NOT_VERIFIED,
+    # but phone is marked verified in DB!
+    assert v_res.status_code == 403
+    assert v_res.json()["code"] == "AUTH_EMAIL_NOT_VERIFIED"
+
+    # Now attempt to send OTP again for the phone-verified user -> 400 AUTH_PHONE_ALREADY_VERIFIED
+    res = await client.post("/api/v1/auth/otp/send", json={"phone": phone})
+    assert res.status_code == 400
+    body = res.json()
+    assert body["code"] == "AUTH_PHONE_ALREADY_VERIFIED"

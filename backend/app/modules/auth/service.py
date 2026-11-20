@@ -34,6 +34,7 @@ from app.core.exceptions import (
     PasswordResetCooldownError,
     PasswordResetRateLimitError,
     PhoneAlreadyRegisteredError,
+    PhoneAlreadyVerifiedError,
     PhoneCheckRateLimitError,
     PhoneNotVerifiedError,
     UserNotFoundError,
@@ -140,7 +141,7 @@ class AuthService:
         phone_dispatched = False
         email_dispatched = False
         try:
-            await self.send_otp(CanonicalPhone(payload.phone))
+            await self.send_otp(CanonicalPhone(payload.phone), check_user_exists=False)
             phone_dispatched = True
             await dispatch_email_verification_otp(
                 redis_client=self._redis,
@@ -200,7 +201,7 @@ class AuthService:
         refresh_token = create_refresh_token(user.id, user.role, self._settings)
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
-    async def send_otp(self, phone: CanonicalPhone) -> None:
+    async def send_otp(self, phone: CanonicalPhone, *, check_user_exists: bool = True) -> None:
         """Generate and store an OTP in Redis, dispatching it to the user.
 
         The CanonicalPhone annotation is the guarantee that `phone` is already
@@ -210,6 +211,23 @@ class AuthService:
         `otp:0815…` key that verify_otp — which looks up the canonical form —
         could never find.
         """
+        if check_user_exists:
+            query = select(User).where(User.phone == phone)
+            result = await self._db.execute(query)
+            user = result.scalar_one_or_none()
+            if user is None:
+                raise UserNotFoundError(
+                    detail="No account found with this phone number. Please register first.",
+                    context={"phone": phone[-4:]},
+                )
+            if not user.is_active:
+                raise InactiveUserError(context={"user_id": str(user.id)})
+            if user.is_phone_verified:
+                raise PhoneAlreadyVerifiedError(
+                    detail="Phone number is already verified. Please log in.",
+                    context={"phone": phone[-4:]},
+                )
+
         rate_key = f"otp:rate:{phone}"
         cooldown_key = f"otp:cooldown:{phone}"
 

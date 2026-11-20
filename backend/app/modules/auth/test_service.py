@@ -25,6 +25,7 @@ from app.core.exceptions import (
     PasswordResetCooldownError,
     PasswordResetRateLimitError,
     PhoneAlreadyRegisteredError,
+    PhoneAlreadyVerifiedError,
     PhoneNotVerifiedError,
     SMSDispatchError,
     UserNotFoundError,
@@ -62,6 +63,12 @@ from structlog.testing import capture_logs
 def mock_db() -> AsyncMock:
     db = AsyncMock()
     db.add = MagicMock()
+    mock_user = MagicMock()
+    mock_user.is_active = True
+    mock_user.is_phone_verified = False
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+    db.execute.return_value = mock_result
     return db
 
 
@@ -722,7 +729,7 @@ async def _send_otp_like_router(service: AuthService, raw_phone: str) -> None:
     await service.send_otp(CanonicalPhone(payload.phone))
 
 
-def _active_user(phone: str = CANONICAL_PHONE) -> User:
+def _active_user(phone: str = CANONICAL_PHONE, is_phone_verified: bool = False) -> User:
     from datetime import UTC, datetime
 
     return User(
@@ -734,7 +741,7 @@ def _active_user(phone: str = CANONICAL_PHONE) -> User:
         hashed_password="hash",
         role="customer",
         is_active=True,
-        is_phone_verified=True,
+        is_phone_verified=is_phone_verified,
     )
 
 
@@ -1328,6 +1335,49 @@ async def test_send_otp_failure_rolls_back_redis_key(
 
     # Redis key must be purged so no orphaned un-sent OTP remains
     assert await fake_redis.get(f"otp:{phone}") is None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_unregistered_phone_raises_user_not_found(
+    auth_service: AuthService,
+    mock_db: AsyncMock,
+) -> None:
+    mock_db.execute.return_value = _db_returning(None)
+    phone = CanonicalPhone("2348153551975")
+
+    with pytest.raises(UserNotFoundError) as exc_info:
+        await auth_service.send_otp(phone)
+    assert exc_info.value.status_code == 404
+    assert "No account found with this phone number" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_send_otp_inactive_user_raises_inactive_user(
+    auth_service: AuthService,
+    mock_db: AsyncMock,
+) -> None:
+    user = _active_user(is_phone_verified=False)
+    user.is_active = False
+    mock_db.execute.return_value = _db_returning(user)
+    phone = CanonicalPhone("2348153551975")
+
+    with pytest.raises(InactiveUserError):
+        await auth_service.send_otp(phone)
+
+
+@pytest.mark.asyncio
+async def test_send_otp_already_verified_raises_phone_already_verified(
+    auth_service: AuthService,
+    mock_db: AsyncMock,
+) -> None:
+    user = _active_user(is_phone_verified=True)
+    mock_db.execute.return_value = _db_returning(user)
+    phone = CanonicalPhone("2348153551975")
+
+    with pytest.raises(PhoneAlreadyVerifiedError) as exc_info:
+        await auth_service.send_otp(phone)
+    assert exc_info.value.status_code == 400
+    assert "already verified" in exc_info.value.detail
 
 
 @pytest.mark.asyncio

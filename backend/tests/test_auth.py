@@ -35,6 +35,13 @@ async def auth_client(
     mock_db = AsyncMock()
     mock_db.add = MagicMock()
 
+    default_user = MagicMock()
+    default_user.is_active = True
+    default_user.is_phone_verified = False
+    mock_db.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=default_user)
+    )
+
     async def override_get_db() -> AsyncGenerator[AsyncMock, None]:
         yield mock_db
 
@@ -300,6 +307,55 @@ async def test_api_send_otp_rate_limit_returns_429(
     data = res_limited.json()
     assert data["code"] == "AUTH_OTP_RATE_LIMITED"
     assert "Retry-After" in res_limited.headers
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_unregistered_phone_returns_404(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, _ = auth_client
+    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+    payload = {"phone": "08011112222"}
+    response = await client.post("/api/v1/auth/otp/send", json=payload)
+    assert response.status_code == 404
+    data = response.json()
+    assert data["code"] == "USER_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_already_verified_returns_400(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, _ = auth_client
+    verified_user = MagicMock()
+    verified_user.is_active = True
+    verified_user.is_phone_verified = True
+    mock_db.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=verified_user)
+    )
+    payload = {"phone": "08011112222"}
+    response = await client.post("/api/v1/auth/otp/send", json=payload)
+    assert response.status_code == 400
+    data = response.json()
+    assert data["code"] == "AUTH_PHONE_ALREADY_VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_inactive_user_returns_403(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, _ = auth_client
+    inactive_user = MagicMock()
+    inactive_user.is_active = False
+    inactive_user.is_phone_verified = False
+    mock_db.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=inactive_user)
+    )
+    payload = {"phone": "08011112222"}
+    response = await client.post("/api/v1/auth/otp/send", json=payload)
+    assert response.status_code == 403
+    data = response.json()
+    assert data["code"] == "AUTH_USER_INACTIVE"
 
 
 @pytest.mark.asyncio

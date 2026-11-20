@@ -135,6 +135,13 @@ class PhoneNotVerifiedError(UrgentHelpError):
 
 
 @dataclass
+class PhoneAlreadyVerifiedError(UrgentHelpError):
+    code: str = "AUTH_PHONE_ALREADY_VERIFIED"
+    detail: str = "Phone number is already verified. Please log in."
+    status_code: int = status.HTTP_400_BAD_REQUEST
+
+
+@dataclass
 class EmailNotVerifiedError(UrgentHelpError):
     code: str = "AUTH_EMAIL_NOT_VERIFIED"
     detail: str = "Email address is not verified. Please verify your email address via OTP."
