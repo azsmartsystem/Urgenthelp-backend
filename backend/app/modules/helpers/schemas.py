@@ -7,6 +7,7 @@ from app.schemas.base import AppBaseModel
 from pydantic import ConfigDict, Field, Strict, field_validator, model_validator
 
 DayOfWeek = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+AddressType = Literal["home", "work", "other"]
 
 
 class DaySchedule(AppBaseModel):
@@ -48,6 +49,7 @@ class HelperProfileResponse(AppBaseModel):
     is_id_verified: bool
     trust_score: float
     address: str | None = None
+    address_type: AddressType | None = None
     latitude: float | None = None
     longitude: float | None = None
     nearest_landmark: str | None = None
@@ -81,6 +83,7 @@ class UpdateHelperProfileRequest(AppBaseModel):
             "Ojuelegba Bus-Stop",
         ],
     )
+    address_type: AddressType | None = Field(default=None)
     bio: str | None = Field(default=None, max_length=1000)
     service_radius_km: float | None = Field(default=None, gt=0.0, le=50.0)
     is_available: bool | None = None
@@ -99,6 +102,16 @@ class UpdateHelperProfileRequest(AppBaseModel):
         if not stripped:
             raise ValueError("nearest_landmark cannot be blank.")
         return stripped
+
+    @field_validator("address_type", mode="before")
+    @classmethod
+    def normalize_address_type(cls, v: object) -> object:
+        if isinstance(v, str):
+            lowered = v.strip().lower()
+            if lowered in ("other", "others"):
+                return "other"
+            return lowered
+        return v
 
     @field_validator("bio")
     @classmethod
@@ -127,6 +140,8 @@ class UpdateHelperProfileRequest(AppBaseModel):
     def validate_non_null_required_fields(self) -> Self:
         if "nearest_landmark" in self.model_fields_set and self.nearest_landmark is None:
             raise ValueError("nearest_landmark cannot be explicitly set to null.")
+        if "address_type" in self.model_fields_set and self.address_type is None:
+            raise ValueError("address_type cannot be explicitly set to null.")
         if "service_radius_km" in self.model_fields_set and self.service_radius_km is None:
             raise ValueError("service_radius_km cannot be null.")
         if "is_available" in self.model_fields_set and self.is_available is None:

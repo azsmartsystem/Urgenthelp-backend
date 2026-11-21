@@ -943,6 +943,48 @@ def test_update_profile_request_accepts_equator_nonzero_and_bounds() -> None:
     assert req_bounds.longitude == 180.0
 
 
+def test_update_profile_request_address_type_normalization() -> None:
+    req_home = UpdateProfileRequest.model_validate({"address_type": "Home"})
+    assert req_home.address_type == "home"
+
+    req_work = UpdateProfileRequest.model_validate({"address_type": "work"})
+    assert req_work.address_type == "work"
+
+    req_others = UpdateProfileRequest.model_validate({"address_type": "Others"})
+    assert req_others.address_type == "other"
+
+    req_other = UpdateProfileRequest.model_validate({"address_type": "other"})
+    assert req_other.address_type == "other"
+
+    with pytest.raises(ValidationError):
+        UpdateProfileRequest.model_validate({"address_type": "invalid_type"})
+
+    with pytest.raises(ValidationError):
+        UpdateProfileRequest.model_validate({"address_type": None})
+
+
+@pytest.mark.asyncio
+async def test_update_profile_updates_address_type(
+    user_service: UserService,
+    mock_db: AsyncMock,
+) -> None:
+    user_id = uuid.uuid4()
+    user = _make_user(user_id=user_id)
+    mock_db.get.return_value = user
+
+    resp = await user_service.update_profile(
+        user_id=user_id,
+        payload=UpdateProfileRequest(
+            address="12 Broad St, Lagos",
+            address_type="work",
+        ),
+    )
+    assert user.address == "12 Broad St, Lagos"
+    assert user.address_type == "work"
+    assert resp.address == "12 Broad St, Lagos"
+    assert resp.address_type == "work"
+
+
 @pytest.mark.asyncio
 async def test_upload_profile_photo_stores_key_and_cleans_up_previous_managed_key(
     user_service: UserService,

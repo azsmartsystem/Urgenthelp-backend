@@ -32,6 +32,7 @@ def _make_user(
     latitude: float | None = 6.5244,
     longitude: float | None = 3.3792,
     full_name: str = "Tunde Bakare",
+    address_type: str | None = "home",
 ) -> User:
     return User(
         id=user_id or uuid.uuid4(),
@@ -44,6 +45,7 @@ def _make_user(
         is_phone_verified=True,
         trust_score=85.0,
         address="Yaba, Lagos",
+        address_type=address_type,
         latitude=latitude,
         longitude=longitude,
         profile_photo_url=None,
@@ -160,6 +162,23 @@ def test_update_helper_profile_nearest_landmark_absent_is_fine() -> None:
     assert "nearest_landmark" not in req.model_fields_set
 
 
+def test_update_helper_profile_address_type_normalization() -> None:
+    req_home = UpdateHelperProfileRequest.model_validate({"address_type": "Home"})
+    assert req_home.address_type == "home"
+
+    req_work = UpdateHelperProfileRequest.model_validate({"address_type": "WORK"})
+    assert req_work.address_type == "work"
+
+    req_others = UpdateHelperProfileRequest.model_validate({"address_type": "Others"})
+    assert req_others.address_type == "other"
+
+    with pytest.raises(ValidationError):
+        UpdateHelperProfileRequest.model_validate({"address_type": "invalid_type"})
+
+    with pytest.raises(ValidationError):
+        UpdateHelperProfileRequest.model_validate({"address_type": None})
+
+
 # ─── HelperService Tests ────────────────────────────────────────────────────
 
 
@@ -246,6 +265,28 @@ async def test_update_helper_profile_saves_nearest_landmark() -> None:
     db.commit.assert_awaited_once()
     assert profile.nearest_landmark == "Ojuelegba Bus-Stop"
     assert res.nearest_landmark == "Ojuelegba Bus-Stop"
+
+
+@pytest.mark.asyncio
+async def test_update_helper_profile_saves_address_type() -> None:
+    user = _make_user(address_type="home")
+    profile = _make_profile(user)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(user),
+            _scalar_result(profile),
+        ]
+    )
+    service = HelperService(db=db)
+
+    payload = UpdateHelperProfileRequest(address_type="work")
+    res = await service.update_helper_profile(user.id, payload)
+
+    db.commit.assert_awaited_once()
+    assert user.address_type == "work"
+    assert res.address_type == "work"
 
 
 @pytest.mark.asyncio

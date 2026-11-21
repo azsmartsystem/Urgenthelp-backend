@@ -63,6 +63,10 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     profile_photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    address_type: Mapped[str | None] = mapped_column(
+        Enum("home", "work", "other", name="address_type_enum"),
+        nullable=True,
+    )
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     trust_score: Mapped[float] = mapped_column(default=50.0, nullable=False)

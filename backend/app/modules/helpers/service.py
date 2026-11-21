@@ -14,6 +14,7 @@ from app.core.geo import bounding_box, haversine_km
 from app.modules.categories.model import ServiceCategory
 from app.modules.helpers.model import HelperCategory, HelperProfile
 from app.modules.helpers.schemas import (
+    AddressType,
     DayOfWeek,
     DaySchedule,
     HelperCategorySummary,
@@ -90,6 +91,7 @@ class HelperService:
             is_id_verified=user.is_id_verified,
             trust_score=user.trust_score,
             address=user.address,
+            address_type=cast(AddressType | None, user.address_type),
             latitude=user.latitude,
             longitude=user.longitude,
             nearest_landmark=profile.nearest_landmark,
@@ -123,6 +125,8 @@ class HelperService:
             profile.bio = payload.bio
         if "nearest_landmark" in fields and payload.nearest_landmark is not None:
             profile.nearest_landmark = payload.nearest_landmark
+        if "address_type" in fields and payload.address_type is not None:
+            user.address_type = payload.address_type
         if "service_radius_km" in fields and payload.service_radius_km is not None:
             profile.service_radius_km = payload.service_radius_km
         if "is_available" in fields and payload.is_available is not None:

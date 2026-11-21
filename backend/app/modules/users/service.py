@@ -122,6 +122,8 @@ class UserService:
             user.full_name = payload.full_name
         if "address" in fields_set:
             user.address = payload.address
+        if "address_type" in fields_set:
+            user.address_type = payload.address_type
         if "latitude" in fields_set and "longitude" in fields_set:
             user.latitude = payload.latitude
             user.longitude = payload.longitude

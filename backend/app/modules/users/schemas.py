@@ -8,6 +8,8 @@ from app.core.validators import NigerianPhone
 from app.schemas.base import AppBaseModel
 from pydantic import ConfigDict, EmailStr, Field, field_validator, model_validator
 
+AddressType = Literal["home", "work", "other"]
+
 
 class UserProfileResponse(AppBaseModel):
     """Authenticated user profile representation."""
@@ -24,6 +26,7 @@ class UserProfileResponse(AppBaseModel):
     phone_verified_at: datetime | None = None
     trust_score: float
     address: str | None = None
+    address_type: AddressType | None = None
     latitude: float | None = None
     longitude: float | None = None
     profile_photo_url: str | None = None
@@ -41,6 +44,7 @@ class UpdateProfileRequest(AppBaseModel):
 
     full_name: str | None = Field(default=None, min_length=2, max_length=100)
     address: str | None = Field(default=None, min_length=1, max_length=500)
+    address_type: AddressType | None = Field(default=None)
     latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
     longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
 
@@ -64,10 +68,23 @@ class UpdateProfileRequest(AppBaseModel):
             raise ValueError("Address cannot be blank.")
         return stripped
 
+    @field_validator("address_type", mode="before")
+    @classmethod
+    def normalize_address_type(cls, v: object) -> object:
+        if isinstance(v, str):
+            lowered = v.strip().lower()
+            if lowered in ("other", "others"):
+                return "other"
+            return lowered
+        return v
+
     @model_validator(mode="after")
     def validate_profile_fields(self) -> Self:
         if "full_name" in self.model_fields_set and self.full_name is None:
             raise ValueError("full_name cannot be null.")
+
+        if "address_type" in self.model_fields_set and self.address_type is None:
+            raise ValueError("address_type cannot be null.")
 
         lat_set = "latitude" in self.model_fields_set
         lon_set = "longitude" in self.model_fields_set
