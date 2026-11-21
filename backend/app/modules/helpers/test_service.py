@@ -67,11 +67,13 @@ def _make_profile(
     service_radius_km: float = 10.0,
     is_available: bool = True,
     categories: list[ServiceCategory] | None = None,
+    nearest_landmark: str | None = None,
 ) -> HelperProfile:
     profile = HelperProfile(
         id=uuid.uuid4(),
         user_id=user.id,
         bio="Experienced Lagos plumber",
+        nearest_landmark=nearest_landmark,
         service_radius_km=service_radius_km,
         is_available=is_available,
         availability_schedule={"mon": {"start": "08:00", "end": "18:00"}},
@@ -134,6 +136,28 @@ def test_update_helper_profile_rejects_null_required_and_blank_cert() -> None:
         UpdateHelperProfileRequest(service_radius_km=None)
     with pytest.raises(ValidationError):
         UpdateHelperProfileRequest(certifications=["   "])
+
+
+def test_update_helper_profile_rejects_blank_nearest_landmark() -> None:
+    with pytest.raises(ValidationError):
+        UpdateHelperProfileRequest(nearest_landmark="   ")
+
+
+def test_update_helper_profile_rejects_explicit_null_nearest_landmark() -> None:
+    with pytest.raises(ValidationError):
+        UpdateHelperProfileRequest(nearest_landmark=None)
+
+
+def test_update_helper_profile_strips_nearest_landmark() -> None:
+    req = UpdateHelperProfileRequest(nearest_landmark="  Ikeja Under-Bridge  ")
+    assert req.nearest_landmark == "Ikeja Under-Bridge"
+
+
+def test_update_helper_profile_nearest_landmark_absent_is_fine() -> None:
+    # Omitting nearest_landmark entirely (e.g. user is editing bio only) is allowed.
+    req = UpdateHelperProfileRequest(bio="Experienced plumber")
+    assert req.nearest_landmark is None
+    assert "nearest_landmark" not in req.model_fields_set
 
 
 # ─── HelperService Tests ────────────────────────────────────────────────────
@@ -200,6 +224,28 @@ async def test_get_my_profile_role_and_status_guards() -> None:
     db.execute = AsyncMock(return_value=_scalar_result(customer))
     with pytest.raises(ForbiddenError):
         await service.get_my_profile(customer.id)
+
+
+@pytest.mark.asyncio
+async def test_update_helper_profile_saves_nearest_landmark() -> None:
+    user = _make_user()
+    profile = _make_profile(user)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(user),
+            _scalar_result(profile),
+        ]
+    )
+    service = HelperService(db=db)
+
+    payload = UpdateHelperProfileRequest(nearest_landmark="Ojuelegba Bus-Stop")
+    res = await service.update_helper_profile(user.id, payload)
+
+    db.commit.assert_awaited_once()
+    assert profile.nearest_landmark == "Ojuelegba Bus-Stop"
+    assert res.nearest_landmark == "Ojuelegba Bus-Stop"
 
 
 @pytest.mark.asyncio

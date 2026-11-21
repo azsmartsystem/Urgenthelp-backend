@@ -92,6 +92,7 @@ class HelperService:
             address=user.address,
             latitude=user.latitude,
             longitude=user.longitude,
+            nearest_landmark=profile.nearest_landmark,
             bio=profile.bio,
             service_radius_km=profile.service_radius_km,
             is_available=profile.is_available,
@@ -120,6 +121,8 @@ class HelperService:
 
         if "bio" in fields:
             profile.bio = payload.bio
+        if "nearest_landmark" in fields and payload.nearest_landmark is not None:
+            profile.nearest_landmark = payload.nearest_landmark
         if "service_radius_km" in fields and payload.service_radius_km is not None:
             profile.service_radius_km = payload.service_radius_km
         if "is_available" in fields and payload.is_available is not None:
@@ -220,6 +223,7 @@ class HelperService:
                         avg_rating=profile.avg_rating,
                         completed_jobs_count=profile.completed_jobs_count,
                         bio=profile.bio,
+                        nearest_landmark=profile.nearest_landmark,
                         service_radius_km=profile.service_radius_km,
                         distance_km=round(dist, 2),
                         categories=categories,

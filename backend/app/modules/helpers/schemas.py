@@ -50,6 +50,7 @@ class HelperProfileResponse(AppBaseModel):
     address: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    nearest_landmark: str | None = None
     bio: str | None = None
     service_radius_km: float
     is_available: bool
@@ -70,6 +71,16 @@ class UpdateHelperProfileRequest(AppBaseModel):
         extra="forbid",
     )
 
+    nearest_landmark: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=200,
+        examples=[
+            "Ikeja Under-Bridge",
+            "Lekki Toll Gate",
+            "Ojuelegba Bus-Stop",
+        ],
+    )
     bio: str | None = Field(default=None, max_length=1000)
     service_radius_km: float | None = Field(default=None, gt=0.0, le=50.0)
     is_available: bool | None = None
@@ -78,6 +89,16 @@ class UpdateHelperProfileRequest(AppBaseModel):
     category_ids: list[Annotated[uuid.UUID, Strict(False)]] | None = Field(
         default=None, max_length=20
     )
+
+    @field_validator("nearest_landmark")
+    @classmethod
+    def normalize_nearest_landmark(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("nearest_landmark cannot be blank.")
+        return stripped
 
     @field_validator("bio")
     @classmethod
@@ -104,6 +125,8 @@ class UpdateHelperProfileRequest(AppBaseModel):
 
     @model_validator(mode="after")
     def validate_non_null_required_fields(self) -> Self:
+        if "nearest_landmark" in self.model_fields_set and self.nearest_landmark is None:
+            raise ValueError("nearest_landmark cannot be explicitly set to null.")
         if "service_radius_km" in self.model_fields_set and self.service_radius_km is None:
             raise ValueError("service_radius_km cannot be null.")
         if "is_available" in self.model_fields_set and self.is_available is None:
@@ -127,6 +150,7 @@ class NearbyHelperResponse(AppBaseModel):
     avg_rating: float
     completed_jobs_count: int
     bio: str | None = None
+    nearest_landmark: str | None = None
     service_radius_km: float
     distance_km: float
     categories: list[HelperCategorySummary]

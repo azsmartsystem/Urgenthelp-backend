@@ -67,6 +67,7 @@ class HelperProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
     )
     bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nearest_landmark: Mapped[str | None] = mapped_column(Text, nullable=True)
     service_radius_km: Mapped[float] = mapped_column(
         Float, default=10.0, server_default=text("10.0"), nullable=False
     )
