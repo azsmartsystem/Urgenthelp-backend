@@ -54,6 +54,39 @@ def test_matching_engine_score_helper() -> None:
     assert score > 0.9
 
 
+def test_matching_engine_respects_helper_service_radius_km() -> None:
+    # ~10 km away from job
+    candidate = HelperCandidate(
+        helper_id="h1",
+        latitude=6.555,
+        longitude=3.406,
+        avg_rating=5.0,
+        trust_score=100.0,
+        skills=["cleaning"],
+        avg_response_minutes=5.0,
+        service_radius_km=5.0,
+    )
+    job = JobRequest(latitude=6.465, longitude=3.406, category="cleaning")
+    assert score_helper(candidate, job) == 0.0
+    assert rank_helpers([candidate], job) == []
+
+
+def test_pricing_engine_respects_base_price_override() -> None:
+    req = PricingRequest(
+        category="custom_db_slug",
+        distance_km=0.0,
+        urgency="standard",
+        requested_at=datetime(2026, 10, 5, 12, 0),
+        duration_hours=2.0,
+        base_price_override=12_500.0,
+    )
+    price = recommend_price(req)
+    assert price.confidence == "high"
+    assert price.recommended == 25_000.0
+    assert price.minimum == round(25_000.0 * 0.85, 2)
+    assert price.maximum == round(25_000.0 * 1.20, 2)
+
+
 def test_pricing_engine_urgent_and_standard() -> None:
     standard_req = PricingRequest(
         category="cleaning",

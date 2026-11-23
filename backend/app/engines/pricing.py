@@ -21,6 +21,7 @@ class PricingRequest:
     urgency: Literal["standard", "urgent"]
     requested_at: datetime
     duration_hours: float = 1.0
+    base_price_override: float | None = None
 
 
 @dataclass(frozen=True)
@@ -71,7 +72,12 @@ def _is_peak_hour(dt: datetime) -> bool:
 
 def recommend_price(request: PricingRequest) -> PriceRange:
     """Compute a recommended price range for a booking request."""
-    base = BASE_PRICES.get(request.category.lower(), 5_000)
+    if request.base_price_override is not None:
+        base = request.base_price_override
+        known_category = True
+    else:
+        base = BASE_PRICES.get(request.category.lower(), 5_000)
+        known_category = request.category.lower() in BASE_PRICES
     travel = request.distance_km * RATE_PER_KM
     duration_factor = request.duration_hours  # linear scaling
 
@@ -83,7 +89,6 @@ def recommend_price(request: PricingRequest) -> PriceRange:
     if _is_peak_hour(request.requested_at):
         raw *= PEAK_HOUR_MULTIPLIER
 
-    known_category = request.category.lower() in BASE_PRICES
     confidence: Literal["high", "medium", "low"] = "high" if known_category else "low"
 
     logger.debug(

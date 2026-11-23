@@ -188,44 +188,47 @@
 
 #### 🎯 Tasks 003
 
-- [ ] **Migration: `bookings` table**
-  - [ ] All fields: status, location, notes, prices, customer_id, helper_id, category_id
-  - [ ] Alembic migration
+- [x] **Migration: `bookings` lifecycle fields + `booking_offers` table** *(Done — Nov 22)*
+  - [x] All fields: status, urgency, duration_hours, matching_mode, location, notes, prices (min/recommended/max/agreed), cancellation metadata, customer_id, helper_id, category_id
+  - [x] `booking_offers` table + PostgreSQL partial unique index `uq_bookings_active_helper` (1 active job per helper)
+  - [x] Alembic migration (`20261122_c3e5f0a2d409`)
   - **Est. Time:** 1h | **Blocker?** ❌ None
 
-- [ ] **Bookings Module — Create** `POST /api/v1/bookings`
-  - [ ] `BookingService.create_booking()` — validate category, calculate price via `engines.pricing`
-  - [ ] Return recommended price range to customer
-  - [ ] Write tests
+- [x] **Bookings Module — Create** `POST /api/v1/bookings` *(Done — Nov 22)*
+  - [x] `BookingService.create_booking()` — validate category, calculate price via `engines.pricing` using DB `ServiceCategory.base_price_ngn` (`distance_km=0.0`)
+  - [x] Return recommended price range to customer
+  - [x] Write tests
   - **Est. Time:** 4h | **Blocker?** ❌ None
 
-- [ ] **Bookings Module — Matching** `POST /api/v1/bookings/{id}/match`
-  - [ ] `BookingService.match_helpers()` — query available helpers, run `engines.matching.rank_helpers()`
-  - [ ] Send push notification to top-3 ranked helpers (FCM stub)
-  - [ ] Transition: `requested → matched`
-  - [ ] Write tests including `NoAvailableHelpersError`
+- [x] **Bookings Module — Matching** `POST /api/v1/bookings/{id}/match` + `/select-helper` *(Done — Nov 22)*
+  - [x] `BookingService.match_helpers()` — query available non-busy helpers within each helper's `service_radius_km`, run `engines.matching.rank_helpers()`
+  - [x] Dual mode: `auto` broadcasts to top-3 ranked helpers (FCM `MockPushProvider` stub, first-to-accept) and transitions `requested → matched`; `manual` returns ranked candidates (with optional `include_busy=true` sorted last) for `POST /bookings/{id}/select-helper`
+  - [x] `GET /api/v1/helpers/nearby` exposes `is_busy` flag sorted strictly after available helpers
+  - [x] Write tests including `NoAvailableHelpersError` and `HelperBusyError`
   - **Est. Time:** 5h | **Blocker?** ❌ None
 
-- [ ] **Bookings Module — State Transitions**
-  - [ ] `POST /api/v1/bookings/{id}/accept` → `matched → accepted`
-  - [ ] `POST /api/v1/bookings/{id}/start` → `accepted → en_route`
-  - [ ] `POST /api/v1/bookings/{id}/complete` → `in_progress → completed`
-  - [ ] `POST /api/v1/bookings/{id}/cancel` — cancel from valid states
-  - [ ] Enforce `booking.can_transition_to()` on every update
-  - [ ] Write state machine tests
+- [x] **Bookings Module — State Transitions** *(Done — Nov 22)*
+  - [x] `POST /api/v1/bookings/{id}/accept` → `matched → accepted` (row-locked `FOR UPDATE`, supersedes other pending offers)
+  - [x] `POST /api/v1/bookings/{id}/decline` → declines offer (reverts `matched → requested` when no pending offers remain)
+  - [x] `POST /api/v1/bookings/{id}/en-route` → `accepted → en_route`
+  - [x] `POST /api/v1/bookings/{id}/start` → `en_route → in_progress`
+  - [x] `POST /api/v1/bookings/{id}/complete` → `in_progress → completed` (increments `completed_jobs_count`)
+  - [x] `POST /api/v1/bookings/{id}/cancel` — cancel from valid states (`requested`, `matched`, `accepted`)
+  - [x] Enforce `booking.can_transition_to()` on every update
+  - [x] Write state machine tests
   - **Est. Time:** 5h | **Blocker?** ❌ None
 
-- [ ] **Bookings Module — List/Get**
-  - [ ] `GET /api/v1/bookings` — customer's booking history (paginated)
-  - [ ] `GET /api/v1/bookings/{id}` — booking detail
-  - [ ] `GET /api/v1/helpers/me/bookings` — helper's job queue
+- [x] **Bookings Module — List/Get** *(Done — Nov 22)*
+  - [x] `GET /api/v1/bookings` — customer's booking history (paginated)
+  - [x] `GET /api/v1/bookings/{id}` — booking detail
+  - [x] `GET /api/v1/helpers/me/bookings` — helper's job queue (assigned jobs + pending offers)
   - **Est. Time:** 2h | **Blocker?** ❌ None
 
 **Week 3 Goals:**
 
-- [ ] Full booking lifecycle working end-to-end (create → match → accept → complete)
-- [ ] State machine enforced — invalid transitions return typed errors
-- [ ] AI Matching engine integrated and returning ranked helpers
+- [x] Full booking lifecycle working end-to-end (create → match → accept → en_route → start → complete)
+- [x] State machine enforced — invalid transitions return typed errors
+- [x] AI Matching engine integrated and returning ranked helpers (auto + manual modes)
 
 ---
 
@@ -594,9 +597,9 @@
 | Week | Planned Hours | Actual Hours | Tasks Done | Notes |
 | ------ | ------------- | ------------- | ----------- | ------- |
 | W1 (Bootstrap) | 8h | ~4h | ✅ Full scaffold | Done Sep 30 |
-| W1 (Auth) | 14h | — | ⏳ | Starts Oct 1 |
-| W2 | 18h | — | ⏳ | |
-| W3 | 18h | — | ⏳ | |
+| W1 (Auth) | 14h | — | ✅ Auth, OTP, recovery, notifications | Done Nov 17 |
+| W2 | 18h | — | ✅ Users, helpers, categories, ID upload | Done Nov 19 |
+| W3 | 18h | — | ✅ Bookings lifecycle, dual matching, busy flag | Done Nov 22 |
 | W4 | 17h | — | ⏳ | |
 | W5 | 18h | — | ⏳ | |
 | W6 | 12h | — | ⏳ | |

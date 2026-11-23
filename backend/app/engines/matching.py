@@ -35,6 +35,7 @@ class HelperCandidate:
     trust_score: float  # 0.0 - 100.0
     skills: list[str]
     avg_response_minutes: float
+    service_radius_km: float = MAX_DISTANCE_KM
 
 
 @dataclass(frozen=True)
@@ -55,9 +56,11 @@ class RankedHelper:
 _haversine_km = haversine_km
 
 
-def _distance_score(distance_km: float) -> float:
-    """Linear decay from 1.0 at 0 km to 0.0 at MAX_DISTANCE_KM."""
-    return max(0.0, 1.0 - distance_km / MAX_DISTANCE_KM)
+def _distance_score(distance_km: float, max_distance_km: float = MAX_DISTANCE_KM) -> float:
+    """Linear decay from 1.0 at 0 km to 0.0 at max_distance_km."""
+    if max_distance_km <= 0.0:
+        return 0.0
+    return max(0.0, 1.0 - distance_km / max_distance_km)
 
 
 def _rating_score(avg_rating: float) -> float:
@@ -85,11 +88,12 @@ def score_helper(candidate: HelperCandidate, job: JobRequest) -> float:
         candidate.latitude,
         candidate.longitude,
     )
-    if distance_km > MAX_DISTANCE_KM:
+    max_radius = candidate.service_radius_km
+    if max_radius <= 0.0 or distance_km > max_radius:
         return 0.0  # outside service radius — exclude
 
     return (
-        _distance_score(distance_km) * WEIGHTS["distance"]
+        _distance_score(distance_km, max_distance_km=max_radius) * WEIGHTS["distance"]
         + _rating_score(candidate.avg_rating) * WEIGHTS["rating"]
         + _skill_score(candidate.skills, job.category) * WEIGHTS["skill"]
         + _trust_score_normalised(candidate.trust_score) * WEIGHTS["trust"]

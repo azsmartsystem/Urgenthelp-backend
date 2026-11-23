@@ -168,4 +168,5 @@ class NearbyHelperResponse(AppBaseModel):
     nearest_landmark: str | None = None
     service_radius_km: float
     distance_km: float
+    is_busy: bool = False
     categories: list[HelperCategorySummary]

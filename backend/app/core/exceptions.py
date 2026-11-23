@@ -233,6 +233,27 @@ class NoAvailableHelpersError(UrgentHelpError):
     status_code: int = status.HTTP_404_NOT_FOUND
 
 
+@dataclass
+class BookingOfferNotFoundError(UrgentHelpError):
+    code: str = "BOOKING_OFFER_NOT_FOUND"
+    detail: str = "No pending booking offer was found for this helper."
+    status_code: int = status.HTTP_404_NOT_FOUND
+
+
+@dataclass
+class BookingAlreadyAcceptedError(UrgentHelpError):
+    code: str = "BOOKING_ALREADY_ACCEPTED"
+    detail: str = "This booking has already been accepted by another helper."
+    status_code: int = status.HTTP_409_CONFLICT
+
+
+@dataclass
+class HelperBusyError(UrgentHelpError):
+    code: str = "HELPER_BUSY"
+    detail: str = "Helper is currently committed to another active booking."
+    status_code: int = status.HTTP_409_CONFLICT
+
+
 # ─── Payments ─────────────────────────────────────────────────────────────────
 
 

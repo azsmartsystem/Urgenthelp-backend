@@ -11,6 +11,7 @@ from app.core.exceptions import (
     UserNotFoundError,
 )
 from app.core.geo import bounding_box, haversine_km
+from app.modules.bookings.model import Booking
 from app.modules.categories.model import ServiceCategory
 from app.modules.helpers.model import HelperCategory, HelperProfile
 from app.modules.helpers.schemas import (
@@ -205,6 +206,17 @@ class HelperService:
 
         rows = (await self._db.execute(stmt)).all()
 
+        candidate_user_ids = [user.id for _, user in rows]
+        busy_helper_ids: set[uuid.UUID] = set()
+        if candidate_user_ids:
+            busy_result = await self._db.execute(
+                select(Booking.helper_id).where(
+                    Booking.helper_id.in_(candidate_user_ids),
+                    Booking.status.in_(Booking.ACTIVE_HELPER_STATUSES),
+                )
+            )
+            busy_helper_ids = {hid for hid in busy_result.scalars().all() if hid is not None}
+
         nearby: list[NearbyHelperResponse] = []
         for profile, user in rows:
             if user.latitude is None or user.longitude is None:
@@ -230,9 +242,10 @@ class HelperService:
                         nearest_landmark=profile.nearest_landmark,
                         service_radius_km=profile.service_radius_km,
                         distance_km=round(dist, 2),
+                        is_busy=user.id in busy_helper_ids,
                         categories=categories,
                     )
                 )
 
-        nearby.sort(key=lambda item: item.distance_km)
+        nearby.sort(key=lambda item: (item.is_busy, item.distance_km))
         return nearby[:limit]

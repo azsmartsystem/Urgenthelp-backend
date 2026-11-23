@@ -357,13 +357,16 @@ async def test_get_helpers_nearby_filters_by_effective_radius_and_sorts() -> Non
 
     db = AsyncMock()
     db.execute = AsyncMock(
-        return_value=_rows_all_result(
-            [
-                (mid_profile, mid_user),
-                (short_radius_profile, short_radius_user),
-                (close_profile, close_user),
-            ]
-        )
+        side_effect=[
+            _rows_all_result(
+                [
+                    (mid_profile, mid_user),
+                    (short_radius_profile, short_radius_user),
+                    (close_profile, close_user),
+                ]
+            ),
+            _scalars_all_result([]),
+        ]
     )
     service = HelperService(db=db)
 
@@ -374,6 +377,30 @@ async def test_get_helpers_nearby_filters_by_effective_radius_and_sorts() -> Non
     )
     assert [r.full_name for r in results] == ["Close Helper", "Mid Helper"]
     assert results[0].distance_km < results[1].distance_km
+    assert all(r.is_busy is False for r in results)
+
+
+@pytest.mark.asyncio
+async def test_get_helpers_nearby_marks_busy_helpers_and_sorts_them_last() -> None:
+    busy_close = _make_user(full_name="Busy Close Helper", latitude=6.5160, longitude=3.3900)
+    free_farther = _make_user(full_name="Free Farther Helper", latitude=6.5400, longitude=3.3900)
+
+    busy_profile = _make_profile(busy_close, service_radius_km=10.0)
+    free_profile = _make_profile(free_farther, service_radius_km=10.0)
+
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _rows_all_result([(busy_profile, busy_close), (free_profile, free_farther)]),
+            _scalars_all_result([busy_close.id]),
+        ]
+    )
+    service = HelperService(db=db)
+
+    results = await service.get_helpers_nearby(latitude=6.5158, longitude=3.3898, radius_km=10.0)
+    assert [r.full_name for r in results] == ["Free Farther Helper", "Busy Close Helper"]
+    assert results[0].is_busy is False
+    assert results[1].is_busy is True
 
 
 # ─── Router Tests ───────────────────────────────────────────────────────────

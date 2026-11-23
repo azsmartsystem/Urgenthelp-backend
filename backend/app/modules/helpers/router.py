@@ -6,12 +6,15 @@ from typing import Annotated
 from app.core.exceptions import InvalidTokenError
 from app.core.security import TokenPayload, get_current_user
 from app.db.session import get_db
+from app.modules.bookings.schemas import BookingStatus, PaginatedBookingsResponse
+from app.modules.bookings.service import BookingService
 from app.modules.helpers.schemas import (
     HelperProfileResponse,
     NearbyHelperResponse,
     UpdateHelperProfileRequest,
 )
 from app.modules.helpers.service import HelperService
+from app.modules.notifications.push import get_push_provider
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +23,10 @@ router = APIRouter()
 
 def _get_service(db: Annotated[AsyncSession, Depends(get_db)]) -> HelperService:
     return HelperService(db=db)
+
+
+def _get_booking_service(db: Annotated[AsyncSession, Depends(get_db)]) -> BookingService:
+    return BookingService(db=db, push_provider=get_push_provider())
 
 
 def _parse_user_id(current_user: TokenPayload) -> uuid.UUID:
@@ -48,6 +55,23 @@ async def update_my_helper_profile(
     return await service.update_helper_profile(
         user_id=_parse_user_id(current_user),
         payload=payload,
+    )
+
+
+@router.get("/me/bookings", response_model=PaginatedBookingsResponse, status_code=200)
+async def list_my_helper_bookings(
+    current_user: Annotated[TokenPayload, Depends(get_current_user)],
+    service: Annotated[BookingService, Depends(_get_booking_service)],
+    status: Annotated[BookingStatus | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> PaginatedBookingsResponse:
+    """List the authenticated helper's job queue (assigned jobs + pending offers)."""
+    return await service.list_helper_bookings(
+        helper_id=_parse_user_id(current_user),
+        status=status,
+        page=page,
+        page_size=page_size,
     )
 
 
