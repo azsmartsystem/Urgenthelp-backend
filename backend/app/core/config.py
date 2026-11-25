@@ -91,7 +91,15 @@ class Settings(BaseSettings):
     # Twilio
     TWILIO_ACCOUNT_SID: str | None = None
     TWILIO_AUTH_TOKEN: str | None = None
+    TWILIO_API_KEY_SID: str | None = None
+    TWILIO_API_KEY_SECRET: str | None = None
     TWILIO_FROM_NUMBER: str | None = None
+
+    # ── OTP Verification (Redis / Twilio Verify v2) ───────────────────────────
+    OTP_PROVIDER: Literal["redis", "twilio_verify"] = "redis"
+    EMAIL_OTP_PROVIDER: Literal["redis", "twilio_verify"] = "redis"
+    TWILIO_VERIFY_SERVICE_SID: str | None = None
+    TWILIO_VERIFY_DEFAULT_CHANNEL: Literal["sms", "whatsapp"] = "sms"
 
     # ── Sentry ────────────────────────────────────────────────────────────────
     SENTRY_DSN: str | None = None
@@ -108,10 +116,50 @@ class Settings(BaseSettings):
             return None
         return v
 
+    @field_validator(
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_API_KEY_SID",
+        "TWILIO_API_KEY_SECRET",
+        "TWILIO_FROM_NUMBER",
+        "TWILIO_VERIFY_SERVICE_SID",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_twilio_strings(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @model_validator(mode="after")
     def validate_dev_static_otp(self) -> Self:
         if self.DEV_STATIC_OTP is not None and self.ENVIRONMENT == "production":
             raise ValueError("DEV_STATIC_OTP cannot be set when ENVIRONMENT is 'production'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_twilio_verify_settings(self) -> Self:
+        if bool(self.TWILIO_API_KEY_SID) != bool(self.TWILIO_API_KEY_SECRET):
+            raise ValueError(
+                "Both TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET must be set together."
+            )
+
+        if self.ENVIRONMENT == "production" and (
+            self.OTP_PROVIDER == "twilio_verify" or self.EMAIL_OTP_PROVIDER == "twilio_verify"
+        ):
+            if not self.TWILIO_VERIFY_SERVICE_SID:
+                raise ValueError(
+                    "TWILIO_VERIFY_SERVICE_SID must be non-empty when Twilio Verify is enabled "
+                    "in production."
+                )
+            has_api_key = bool(self.TWILIO_API_KEY_SID and self.TWILIO_API_KEY_SECRET)
+            has_auth_token = bool(self.TWILIO_ACCOUNT_SID and self.TWILIO_AUTH_TOKEN)
+            if not has_api_key and not has_auth_token:
+                raise ValueError(
+                    "Either (TWILIO_API_KEY_SID + TWILIO_API_KEY_SECRET) or "
+                    "(TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN) must be set when Twilio Verify "
+                    "is enabled in production."
+                )
         return self
 
     @model_validator(mode="after")

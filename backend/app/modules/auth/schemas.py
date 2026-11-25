@@ -2,8 +2,9 @@ import uuid
 from typing import Literal
 
 from app.core.validators import NigerianPhone
+from app.modules.notifications.verification import PhoneVerifyChannel
 from app.schemas.base import AppBaseModel
-from pydantic import EmailStr, Field, field_validator
+from pydantic import AliasChoices, EmailStr, Field, field_validator
 
 
 class RegisterRequest(AppBaseModel):
@@ -12,6 +13,14 @@ class RegisterRequest(AppBaseModel):
     full_name: str = Field(min_length=2, max_length=100)
     role: Literal["customer", "helper"]
     password: str = Field(min_length=8, max_length=128)
+    otp_channel: PhoneVerifyChannel | None = Field(
+        default=None,
+        validation_alias=AliasChoices("otp_channel", "channel"),
+        description=(
+            "Delivery channel for initial phone OTP ('sms' or 'whatsapp'). "
+            "Defaults to server config ('sms')."
+        ),
+    )
 
     @field_validator("password")
     @classmethod
@@ -30,6 +39,13 @@ class LoginRequest(AppBaseModel):
 
 class SendOTPRequest(AppBaseModel):
     phone: NigerianPhone = Field(examples=["2348153551975"])
+    channel: PhoneVerifyChannel | None = Field(
+        default=None,
+        validation_alias=AliasChoices("channel", "otp_channel"),
+        description=(
+            "Delivery channel for OTP ('sms' or 'whatsapp'). Defaults to server config ('sms')."
+        ),
+    )
 
 
 class PhoneCheckRequest(AppBaseModel):

@@ -2389,3 +2389,256 @@ async def test_send_otp_and_send_email_otp_use_dev_static_otp(
 
     await service.send_email_otp("dev@example.com")
     assert await fake_redis.get(f"email_otp:{user.id}") == "123456"
+
+
+# ─── Twilio Verify v2 Integration Tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_otp_twilio_verify_defaults_to_sms_and_skips_redis_otp_key(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """When VerificationProvider is active, default channel is 'sms' and Redis stores no OTP."""
+    verify_provider = AsyncMock()
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    phone = CanonicalPhone("2348153551975")
+    await service.send_otp(phone)
+
+    verify_provider.start_verification.assert_awaited_once_with(to=phone, channel="sms")
+    assert await fake_redis.get(f"otp:{phone}") is None
+
+
+@pytest.mark.asyncio
+async def test_send_otp_twilio_verify_whatsapp_channel(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """Explicit channel='whatsapp' is forwarded to VerificationProvider."""
+    verify_provider = AsyncMock()
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    phone = CanonicalPhone("2348153551975")
+    await service.send_otp(phone, channel="whatsapp")
+
+    verify_provider.start_verification.assert_awaited_once_with(to=phone, channel="whatsapp")
+
+
+@pytest.mark.asyncio
+async def test_send_otp_twilio_verify_failure_rolls_back_cooldown_and_rate_limit(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """A provider failure must release cooldown & rate-limit keys so the user can retry."""
+    verify_provider = AsyncMock()
+    verify_provider.start_verification.side_effect = SMSDispatchError(detail="Twilio Verify failed")
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    phone = CanonicalPhone("2348153551975")
+    with pytest.raises(SMSDispatchError):
+        await service.send_otp(phone, channel="whatsapp")
+
+    assert await fake_redis.get(f"otp:cooldown:{phone}") is None
+    assert await fake_redis.get(f"otp:rate:{phone}") == "0"
+
+
+@pytest.mark.asyncio
+async def test_register_forwards_otp_channel_to_verification_provider(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """RegisterRequest(otp_channel='whatsapp') triggers initial OTP via WhatsApp."""
+    mock_db.execute.return_value = _db_returning(None)
+    verify_provider = AsyncMock()
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    payload = RegisterRequest(
+        phone="+2348153551975",
+        email="whatsapp.user@example.com",
+        full_name="Adaeze Okafor",
+        password="StrongPassword123!",
+        role="customer",
+        otp_channel="whatsapp",
+    )
+    res = await service.register(payload)
+
+    assert res.phone == "2348153551975"
+    verify_provider.start_verification.assert_awaited_once_with(
+        to=CanonicalPhone("2348153551975"),
+        channel="whatsapp",
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_otp_twilio_verify_approved_issues_tokens(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """Approved Twilio Verify check marks phone verified and returns JWT tokens."""
+    user = _active_user(is_phone_verified=False)
+    mock_db.execute.return_value = _db_returning(user)
+    verify_provider = AsyncMock()
+    verify_provider.check_verification.return_value = True
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    tokens = await service.verify_otp(OTPVerifyRequest(phone="08153551975", otp="123456"))
+
+    assert tokens.access_token is not None
+    assert tokens.refresh_token is not None
+    assert user.is_phone_verified is True
+    assert user.phone_verified_at is not None
+    verify_provider.check_verification.assert_awaited_once_with(
+        to=CanonicalPhone("2348153551975"),
+        code="123456",
+        channel="sms",
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_otp_twilio_verify_rejected_raises_invalid_otp(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """Rejected Twilio Verify check raises InvalidOTPError with redacted phone."""
+    user = _active_user(is_phone_verified=False)
+    mock_db.execute.return_value = _db_returning(user)
+    verify_provider = AsyncMock()
+    verify_provider.check_verification.return_value = False
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    with pytest.raises(InvalidOTPError) as exc_info:
+        await service.verify_otp(OTPVerifyRequest(phone="08153551975", otp="000000"))
+
+    assert exc_info.value.context == {"phone": "1975"}
+    assert user.is_phone_verified is False
+
+
+@pytest.mark.asyncio
+async def test_verify_otp_twilio_verify_missing_or_inactive_user_skips_provider_call(
+    mock_db: AsyncMock,
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """Verify check must never burn Twilio attempts for missing or inactive users."""
+    verify_provider = AsyncMock()
+    twilio_settings = settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=fake_redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+
+    mock_db.execute.return_value = _db_returning(None)
+    with pytest.raises(UserNotFoundError):
+        await service.verify_otp(OTPVerifyRequest(phone="08153551975", otp="123456"))
+    verify_provider.check_verification.assert_not_awaited()
+
+    inactive_user = _active_user(is_phone_verified=False)
+    inactive_user.is_active = False
+    mock_db.execute.return_value = _db_returning(inactive_user)
+    with pytest.raises(InactiveUserError):
+        await service.verify_otp(OTPVerifyRequest(phone="08153551975", otp="123456"))
+    verify_provider.check_verification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_email_verification_twilio_verify_stores_pending_email_and_verifies(
+    fake_redis: fakeredis.aioredis.FakeRedis,
+    settings: Settings,
+) -> None:
+    """Email OTP with Twilio Verify tracks pending_email in Redis without storing OTP."""
+    from app.core.email_verification import (
+        dispatch_email_verification_otp,
+        verify_email_verification_otp,
+    )
+    from app.modules.notifications.service import NotificationService
+
+    user_id = uuid.uuid4()
+    verify_provider = AsyncMock()
+    verify_provider.check_verification.return_value = True
+    email_settings = settings.model_copy(update={"EMAIL_OTP_PROVIDER": "twilio_verify"})
+    notification_svc = NotificationService(settings=email_settings)
+
+    await dispatch_email_verification_otp(
+        redis_client=fake_redis,
+        settings=email_settings,
+        notification_service=notification_svc,
+        user_id=user_id,
+        email="Test@Example.com",
+        verification_provider=verify_provider,
+    )
+
+    verify_provider.start_verification.assert_awaited_once_with(
+        to="test@example.com",
+        channel="email",
+    )
+    assert await fake_redis.get(f"pending_email:{user_id}") == "test@example.com"
+    assert await fake_redis.get(f"email_otp:{user_id}") is None
+
+    verified_email = await verify_email_verification_otp(
+        redis_client=fake_redis,
+        settings=email_settings,
+        user_id=user_id,
+        submitted_otp="654321",
+        verification_provider=verify_provider,
+    )
+    assert verified_email == "test@example.com"
+    verify_provider.check_verification.assert_awaited_once_with(
+        to="test@example.com",
+        code="654321",
+        channel="email",
+    )
+
+    verify_provider.check_verification.return_value = False
+    with pytest.raises(InvalidEmailOTPError):
+        await verify_email_verification_otp(
+            redis_client=fake_redis,
+            settings=email_settings,
+            user_id=user_id,
+            submitted_otp="000000",
+            verification_provider=verify_provider,
+        )

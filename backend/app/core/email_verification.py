@@ -14,8 +14,23 @@ from app.core.exceptions import (
 )
 from app.core.security import generate_otp
 from app.modules.notifications.service import NotificationService
+from app.modules.notifications.verification import (
+    VerificationProvider,
+    get_twilio_verify_provider,
+)
 
 logger = structlog.get_logger(__name__)
+
+
+def _resolve_email_verification_provider(
+    settings: Settings,
+    verification_provider: VerificationProvider | None,
+) -> VerificationProvider | None:
+    if verification_provider is not None:
+        return verification_provider
+    if settings.EMAIL_OTP_PROVIDER == "twilio_verify":
+        return get_twilio_verify_provider(settings)
+    return None
 
 
 def mask_email(email: str) -> str:
@@ -35,6 +50,7 @@ async def dispatch_email_verification_otp(
     notification_service: NotificationService,
     user_id: uuid.UUID,
     email: str,
+    verification_provider: VerificationProvider | None = None,
 ) -> None:
     """Rate-limit, generate, store, and email a 6-digit verification OTP."""
     email_str = email.strip().lower()
@@ -91,11 +107,30 @@ async def dispatch_email_verification_otp(
             context={"user_id": str(user_id), "retry_after": retry_after},
         )
 
-    otp = generate_otp(settings)
     otp_key = f"email_otp:{user_id}"
     pending_key = f"pending_email:{user_id}"
     fail_key = f"email_otp_fails:{user_id}"
     ttl_seconds = settings.EMAIL_VERIFICATION_EXPIRE_HOURS * 3600
+
+    provider = _resolve_email_verification_provider(settings, verification_provider)
+    if provider is not None:
+        try:
+            await redis_client.set(pending_key, email_str, ex=ttl_seconds)
+            await redis_client.delete(fail_key)
+            await provider.start_verification(to=email_str, channel="email")
+        except Exception:
+            await rollback_email_verification_otp(redis_client, user_id)
+            raise
+
+        logger.info(
+            "email_verification_dispatched",
+            user_id=str(user_id),
+            email=mask_email(email_str) if settings.is_production else email_str,
+            provider="twilio_verify",
+        )
+        return
+
+    otp = generate_otp(settings)
 
     try:
         await redis_client.set(otp_key, otp, ex=ttl_seconds)
@@ -148,11 +183,31 @@ async def verify_email_verification_otp(
     user_id: uuid.UUID,
     submitted_otp: str,
     expected_email: str | None = None,
+    verification_provider: VerificationProvider | None = None,
 ) -> str:
     """Validate the stored email OTP (with 5-attempt lockout) and return the pending email."""
     otp_key = f"email_otp:{user_id}"
     pending_key = f"pending_email:{user_id}"
     fail_key = f"email_otp_fails:{user_id}"
+
+    provider = _resolve_email_verification_provider(settings, verification_provider)
+    if provider is not None:
+        pending_email = await redis_client.get(pending_key)
+        if pending_email is None:
+            raise EmailOTPExpiredError(context={"user_id": str(user_id)})
+        if isinstance(pending_email, bytes):
+            pending_email = pending_email.decode("utf-8")
+        if expected_email is not None and pending_email.lower() != expected_email.strip().lower():
+            raise EmailOTPExpiredError(context={"user_id": str(user_id)})
+
+        approved = await provider.check_verification(
+            to=str(pending_email),
+            code=submitted_otp.strip(),
+            channel="email",
+        )
+        if not approved:
+            raise InvalidEmailOTPError(context={"user_id": str(user_id)})
+        return str(pending_email)
 
     stored_otp = await redis_client.get(otp_key)
     pending_email = await redis_client.get(pending_key)

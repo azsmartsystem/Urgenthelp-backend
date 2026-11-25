@@ -8,7 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from app.core.config import Settings, get_settings
-from app.core.exceptions import EmailDispatchError, SMSDispatchError
+from app.core.exceptions import (
+    EmailDispatchError,
+    EmailOTPExpiredError,
+    EmailRateLimitError,
+    OTPExpiredError,
+    OTPRateLimitError,
+    SMSDispatchError,
+)
 from app.core.validators import CanonicalPhone
 from app.modules.notifications.email import (
     MockEmailProvider,
@@ -22,7 +29,12 @@ from app.modules.notifications.sms import (
     TwilioSMSProvider,
     get_sms_provider,
 )
+from app.modules.notifications.verification import (
+    TwilioVerifyProvider,
+    get_twilio_verify_provider,
+)
 from app.modules.users.model import User
+from pydantic import ValidationError
 
 CANONICAL_PHONE = CanonicalPhone("2348153551975")
 
@@ -1224,3 +1236,401 @@ def test_notification_schemas_validation_bounds() -> None:
 
     exact_max = UpdatePreferencesRequest(preferences=too_many[:100])
     assert len(exact_max.preferences) == 100
+
+
+# ─── TwilioVerifyProvider Tests ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_start_sms_success() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/Services/VA123/Verifications"
+        assert "Authorization" in request.headers
+        assert request.headers["Authorization"].startswith("Basic ")
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["To"] == ["+2348153551975"]
+        assert body["Channel"] == ["sms"]
+        return httpx.Response(201, json={"sid": "VE123", "status": "pending"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        await provider.start_verification(to=CANONICAL_PHONE, channel="sms")
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_start_whatsapp_success() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["To"] == ["+2348153551975"]
+        assert body["Channel"] == ["whatsapp"]
+        return httpx.Response(201, json={"sid": "VE124", "status": "pending"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        await provider.start_verification(to=CANONICAL_PHONE, channel="whatsapp")
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_start_email_success() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["To"] == ["ada@example.com"]
+        assert body["Channel"] == ["email"]
+        return httpx.Response(201, json={"sid": "VE125", "status": "pending"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        await provider.start_verification(to=" Ada@Example.com ", channel="email")
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_start_rate_limit_raises_otp_rate_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"code": 60203, "message": "Max send attempts reached"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        with pytest.raises(OTPRateLimitError):
+            await provider.start_verification(to=CANONICAL_PHONE, channel="sms")
+
+        with pytest.raises(EmailRateLimitError):
+            await provider.start_verification(to="user@example.com", channel="email")
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_start_http_failure_raises_dispatch_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"code": 60200, "message": "Invalid parameter"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        with pytest.raises(SMSDispatchError) as sms_exc:
+            await provider.start_verification(to=CANONICAL_PHONE, channel="whatsapp")
+        assert sms_exc.value.context.get("status_code") == 400
+        assert sms_exc.value.context.get("twilio_code") == 60200
+
+        with pytest.raises(EmailDispatchError) as email_exc:
+            await provider.start_verification(to="user@example.com", channel="email")
+        assert email_exc.value.context.get("twilio_code") == 60200
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_start_timeout_raises_dispatch_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("Twilio Verify timed out")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        with pytest.raises(SMSDispatchError) as exc_info:
+            await provider.start_verification(to=CANONICAL_PHONE, channel="sms")
+        assert exc_info.value.context.get("error") == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_check_approved_returns_true() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/Services/VA123/VerificationCheck"
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["To"] == ["+2348153551975"]
+        assert body["Code"] == ["123456"]
+        assert "Channel" not in body
+        return httpx.Response(200, json={"sid": "VE123", "status": "approved", "valid": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        assert (
+            await provider.check_verification(to=CANONICAL_PHONE, code="123456", channel="sms")
+            is True
+        )
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_check_pending_returns_false() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"sid": "VE123", "status": "pending", "valid": False})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        assert (
+            await provider.check_verification(to=CANONICAL_PHONE, code="000000", channel="sms")
+            is False
+        )
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_check_404_raises_otp_expired() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"code": 20404, "message": "The requested resource was not found"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        with pytest.raises(OTPExpiredError) as sms_exc:
+            await provider.check_verification(to=CANONICAL_PHONE, code="123456", channel="sms")
+        assert sms_exc.value.context == {"phone": "1975"}
+
+        with pytest.raises(EmailOTPExpiredError):
+            await provider.check_verification(to="user@example.com", code="123456", channel="email")
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_check_429_raises_rate_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={"code": 60202, "message": "Max check attempts reached"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        with pytest.raises(OTPRateLimitError):
+            await provider.check_verification(to=CANONICAL_PHONE, code="123456", channel="sms")
+
+        with pytest.raises(EmailOTPExpiredError):
+            await provider.check_verification(to="user@example.com", code="123456", channel="email")
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_check_timeout_raises_dispatch_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("Twilio Verify check timed out")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            account_sid="AC123",
+            auth_token="auth_secret",
+            verify_service_sid="VA123",
+            client=client,
+        )
+        with pytest.raises(SMSDispatchError) as exc_info:
+            await provider.check_verification(to=CANONICAL_PHONE, code="123456", channel="sms")
+        assert exc_info.value.context.get("error") == "timeout"
+
+
+def test_get_twilio_verify_provider_configured_and_unconfigured(settings: Settings) -> None:
+    configured = settings.model_copy(
+        update={
+            "TWILIO_ACCOUNT_SID": "AC123",
+            "TWILIO_AUTH_TOKEN": "token123",
+            "TWILIO_VERIFY_SERVICE_SID": "VA123",
+        }
+    )
+    provider = get_twilio_verify_provider(configured)
+    assert isinstance(provider, TwilioVerifyProvider)
+
+    unconfigured = settings.model_copy(
+        update={
+            "TWILIO_ACCOUNT_SID": "AC123",
+            "TWILIO_AUTH_TOKEN": "token123",
+            "TWILIO_VERIFY_SERVICE_SID": None,
+        }
+    )
+    assert get_twilio_verify_provider(unconfigured) is None
+
+
+def test_settings_production_requires_twilio_verify_creds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("OTP_PROVIDER", "twilio_verify")
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC123")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token123")
+    monkeypatch.setenv("TWILIO_API_KEY_SID", "")
+    monkeypatch.setenv("TWILIO_API_KEY_SECRET", "")
+    monkeypatch.setenv("TWILIO_VERIFY_SERVICE_SID", "   ")
+    monkeypatch.setenv("DEV_STATIC_OTP", "")
+    monkeypatch.setenv("STORAGE_PROVIDER", "local")
+
+    with pytest.raises(ValidationError, match="TWILIO_VERIFY_SERVICE_SID"):
+        Settings()
+
+    monkeypatch.setenv("TWILIO_VERIFY_SERVICE_SID", "VA123")
+    prod_settings = Settings()
+    assert prod_settings.TWILIO_VERIFY_SERVICE_SID == "VA123"
+
+    # Mismatched partial API key fails in any environment
+    monkeypatch.setenv("TWILIO_API_KEY_SID", "SK123")
+    monkeypatch.setenv("TWILIO_API_KEY_SECRET", "")
+    with pytest.raises(ValidationError, match="TWILIO_API_KEY_SECRET"):
+        Settings()
+
+    # API Key + Verify SID succeeds in production without Account SID or Auth Token
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "")
+    monkeypatch.setenv("TWILIO_API_KEY_SID", "SK123")
+    monkeypatch.setenv("TWILIO_API_KEY_SECRET", "secret123")
+    api_key_prod = Settings()
+    assert api_key_prod.TWILIO_API_KEY_SID == "SK123"
+
+
+@pytest.mark.asyncio
+async def test_twilio_verify_provider_uses_api_key_basic_auth() -> None:
+    import base64
+
+    seen_auth_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth_headers.append(request.headers["Authorization"])
+        if request.url.path.endswith("/Verifications"):
+            return httpx.Response(201, json={"sid": "VE123", "status": "pending"})
+        return httpx.Response(200, json={"sid": "VE123", "status": "approved", "valid": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioVerifyProvider(
+            verify_service_sid="VA123",
+            api_key_sid="SK123",
+            api_key_secret="secret123",
+            client=client,
+        )
+        await provider.start_verification(to=CANONICAL_PHONE, channel="whatsapp")
+        assert await provider.check_verification(to=CANONICAL_PHONE, code="123456") is True
+
+    assert len(seen_auth_headers) == 2
+    for header in seen_auth_headers:
+        assert header.startswith("Basic ")
+        decoded = base64.b64decode(header.removeprefix("Basic ")).decode("utf-8")
+        assert decoded == "SK123:secret123"
+
+
+def test_get_twilio_verify_provider_prefers_api_key_over_auth_token(settings: Settings) -> None:
+    s = settings.model_copy(
+        update={
+            "TWILIO_VERIFY_SERVICE_SID": "VA123",
+            "TWILIO_ACCOUNT_SID": "AC_OLD",
+            "TWILIO_AUTH_TOKEN": "old_token",
+            "TWILIO_API_KEY_SID": "SK_NEW",
+            "TWILIO_API_KEY_SECRET": "new_secret",
+        }
+    )
+    provider = get_twilio_verify_provider(s)
+    assert isinstance(provider, TwilioVerifyProvider)
+    assert provider._auth == ("SK_NEW", "new_secret")
+
+    s_only_api_key = settings.model_copy(
+        update={
+            "TWILIO_VERIFY_SERVICE_SID": "VA123",
+            "TWILIO_ACCOUNT_SID": None,
+            "TWILIO_AUTH_TOKEN": None,
+            "TWILIO_API_KEY_SID": "SK_ONLY",
+            "TWILIO_API_KEY_SECRET": "only_secret",
+        }
+    )
+    provider_only_key = get_twilio_verify_provider(s_only_api_key)
+    assert isinstance(provider_only_key, TwilioVerifyProvider)
+    assert provider_only_key._auth == ("SK_ONLY", "only_secret")
+
+
+@pytest.mark.asyncio
+async def test_twilio_sms_provider_uses_api_key_basic_auth_with_account_sid_url() -> None:
+    import base64
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/2010-04-01/Accounts/AC123/Messages.json"
+        decoded = base64.b64decode(request.headers["Authorization"].removeprefix("Basic ")).decode(
+            "utf-8"
+        )
+        assert decoded == "SK123:secret123"
+        return httpx.Response(201, json={"sid": "SM123"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = TwilioSMSProvider(
+            account_sid="AC123",
+            from_number="+1234567890",
+            api_key_sid="SK123",
+            api_key_secret="secret123",
+            client=client,
+        )
+        await provider.send_sms(CANONICAL_PHONE, "Hello via API key")
+
+
+def test_get_sms_provider_twilio_with_api_key_without_auth_token(settings: Settings) -> None:
+    s = settings.model_copy(
+        update={
+            "SMS_PROVIDER": "twilio",
+            "TWILIO_ACCOUNT_SID": "AC123",
+            "TWILIO_AUTH_TOKEN": None,
+            "TWILIO_FROM_NUMBER": "+1234567890",
+            "TWILIO_API_KEY_SID": "SK123",
+            "TWILIO_API_KEY_SECRET": "secret123",
+        }
+    )
+    provider = get_sms_provider(s)
+    assert isinstance(provider, TwilioSMSProvider)
+    assert provider._auth == ("SK123", "secret123")

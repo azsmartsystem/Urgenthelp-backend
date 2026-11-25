@@ -88,7 +88,7 @@ async def send_otp(
     # The schema guarantees payload.phone is already canonical; CanonicalPhone
     # records that for the type checker. This is the single narrowing point
     # between raw user input and the service layer.
-    await service.send_otp(CanonicalPhone(payload.phone))
+    await service.send_otp(CanonicalPhone(payload.phone), channel=payload.channel)
 
 
 @router.post("/otp/verify", response_model=TokenResponse)

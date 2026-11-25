@@ -1173,3 +1173,146 @@ async def test_api_phone_check_enforces_ip_rate_limit(
         headers={"x-forwarded-for": "198.51.100.99"},
     )
     assert other_ip.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_accepts_whatsapp_channel(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, redis = auth_client
+    response = await client.post(
+        "/api/v1/auth/otp/send",
+        json={"phone": "08011112222", "channel": "whatsapp"},
+    )
+    assert response.status_code == 204
+    assert await redis.get("otp:2348011112222") is not None
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_rejects_invalid_channel(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, _, _ = auth_client
+    response = await client.post(
+        "/api/v1/auth/otp/send",
+        json={"phone": "08011112222", "channel": "telegram"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_api_register_accepts_optional_otp_channel(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+) -> None:
+    client, mock_db, redis = auth_client
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = mock_result
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "phone": "+2348011113333",
+            "full_name": "WhatsApp User",
+            "password": "StrongPassword123!",
+            "role": "customer",
+            "email": "whatsapp.api@example.com",
+            "otp_channel": "whatsapp",
+        },
+    )
+    assert response.status_code == 201
+    assert await redis.get("otp:2348011113333") is not None
+
+
+@pytest.mark.asyncio
+async def test_api_send_otp_accepts_otp_channel_alias_and_forwards_whatsapp(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    from app.modules.auth.router import _get_service
+    from app.modules.auth.service import AuthService
+
+    client, mock_db, redis = auth_client
+    verify_provider = AsyncMock()
+    twilio_settings = test_settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+    app.dependency_overrides[_get_service] = lambda: service
+    try:
+        response = await client.post(
+            "/api/v1/auth/otp/send",
+            json={"phone": "08011112222", "otp_channel": "whatsapp"},
+        )
+        assert response.status_code == 204
+        verify_provider.start_verification.assert_awaited_once_with(
+            to="2348011112222",
+            channel="whatsapp",
+        )
+
+        bad_res = await client.post(
+            "/api/v1/auth/otp/send",
+            json={"phone": "08011112222", "otp_channel": "telegram"},
+        )
+        assert bad_res.status_code == 422
+    finally:
+        app.dependency_overrides.pop(_get_service, None)
+
+
+@pytest.mark.asyncio
+async def test_api_register_accepts_channel_alias(
+    auth_client: tuple[AsyncClient, AsyncMock, fakeredis.aioredis.FakeRedis],
+    test_settings: Settings,
+) -> None:
+    from app.modules.auth.router import _get_service
+    from app.modules.auth.schemas import RegisterRequest
+    from app.modules.auth.service import AuthService
+
+    parsed = RegisterRequest.model_validate(
+        {
+            "phone": "+2348011114444",
+            "full_name": "Channel Alias User",
+            "password": "StrongPassword123!",
+            "role": "customer",
+            "email": "alias.api@example.com",
+            "channel": "whatsapp",
+        }
+    )
+    assert parsed.otp_channel == "whatsapp"
+
+    client, mock_db, redis = auth_client
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = mock_result
+
+    verify_provider = AsyncMock()
+    twilio_settings = test_settings.model_copy(update={"OTP_PROVIDER": "twilio_verify"})
+    service = AuthService(
+        db=mock_db,
+        redis_client=redis,
+        settings=twilio_settings,
+        verification_provider=verify_provider,
+    )
+    app.dependency_overrides[_get_service] = lambda: service
+    try:
+        response = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "phone": "+2348011114444",
+                "full_name": "Channel Alias User",
+                "password": "StrongPassword123!",
+                "role": "customer",
+                "email": "alias.api@example.com",
+                "channel": "whatsapp",
+            },
+        )
+        assert response.status_code == 201
+        verify_provider.start_verification.assert_awaited_once_with(
+            to="2348011114444",
+            channel="whatsapp",
+        )
+    finally:
+        app.dependency_overrides.pop(_get_service, None)

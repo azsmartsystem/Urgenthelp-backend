@@ -12,6 +12,7 @@ import structlog
 from app.core.config import Settings, get_settings
 from app.core.exceptions import SMSDispatchError
 from app.core.validators import CanonicalPhone
+from app.modules.notifications.verification import resolve_twilio_auth
 
 logger = structlog.get_logger(__name__)
 
@@ -118,12 +119,25 @@ class TwilioSMSProvider:
     def __init__(
         self,
         account_sid: str,
-        auth_token: str,
-        from_number: str,
+        auth_token: str | None = None,
+        from_number: str = "",
         client: httpx.AsyncClient | None = None,
+        *,
+        api_key_sid: str | None = None,
+        api_key_secret: str | None = None,
     ) -> None:
-        self._account_sid = account_sid
-        self._auth_token = auth_token
+        self._account_sid = account_sid.strip()
+        auth = resolve_twilio_auth(
+            account_sid=self._account_sid,
+            auth_token=auth_token,
+            api_key_sid=api_key_sid,
+            api_key_secret=api_key_secret,
+        )
+        if auth is None:
+            raise ValueError(
+                "TwilioSMSProvider requires (api_key_sid, api_key_secret) or auth_token."
+            )
+        self._auth = auth
         self._from_number = from_number
         self._client = client
 
@@ -141,7 +155,7 @@ class TwilioSMSProvider:
                 response = await self._client.post(
                     endpoint,
                     data=payload,
-                    auth=(self._account_sid, self._auth_token),
+                    auth=self._auth,
                     timeout=10.0,
                 )
             else:
@@ -149,7 +163,7 @@ class TwilioSMSProvider:
                     response = await client.post(
                         endpoint,
                         data=payload,
-                        auth=(self._account_sid, self._auth_token),
+                        auth=self._auth,
                     )
         except httpx.TimeoutException as exc:
             logger.error("twilio_timeout", phone=f"...{to[-4:]}")
@@ -233,10 +247,16 @@ def get_sms_provider(settings: Settings | None = None) -> SMSProvider:
         )
 
     if provider_name == "twilio":
+        auth = resolve_twilio_auth(
+            account_sid=app_settings.TWILIO_ACCOUNT_SID,
+            auth_token=app_settings.TWILIO_AUTH_TOKEN,
+            api_key_sid=app_settings.TWILIO_API_KEY_SID,
+            api_key_secret=app_settings.TWILIO_API_KEY_SECRET,
+        )
         if (
             not app_settings.TWILIO_ACCOUNT_SID
-            or not app_settings.TWILIO_AUTH_TOKEN
             or not app_settings.TWILIO_FROM_NUMBER
+            or auth is None
         ):
             logger.warning(
                 "sms_provider_unconfigured",
@@ -249,6 +269,8 @@ def get_sms_provider(settings: Settings | None = None) -> SMSProvider:
             account_sid=app_settings.TWILIO_ACCOUNT_SID,
             auth_token=app_settings.TWILIO_AUTH_TOKEN,
             from_number=app_settings.TWILIO_FROM_NUMBER,
+            api_key_sid=app_settings.TWILIO_API_KEY_SID,
+            api_key_secret=app_settings.TWILIO_API_KEY_SECRET,
         )
 
     raise ValueError(f"Unsupported SMS provider: {app_settings.SMS_PROVIDER}")

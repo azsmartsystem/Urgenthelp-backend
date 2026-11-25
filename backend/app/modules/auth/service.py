@@ -61,6 +61,11 @@ from app.modules.auth.schemas import (
     VerifyEmailOTPRequest,
 )
 from app.modules.notifications.service import NotificationService
+from app.modules.notifications.verification import (
+    PhoneVerifyChannel,
+    VerificationProvider,
+    get_twilio_verify_provider,
+)
 from app.modules.users.model import User
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +82,7 @@ class AuthService:
         redis_client: aioredis.Redis,
         settings: Settings | None = None,
         notification_service: NotificationService | None = None,
+        verification_provider: VerificationProvider | None = None,
     ) -> None:
         self._db = db
         self._redis = redis_client
@@ -84,6 +90,12 @@ class AuthService:
         self._notification_service = notification_service or NotificationService(
             settings=self._settings
         )
+        if verification_provider is not None:
+            self._verification_provider: VerificationProvider | None = verification_provider
+        elif self._settings.OTP_PROVIDER == "twilio_verify":
+            self._verification_provider = get_twilio_verify_provider(self._settings)
+        else:
+            self._verification_provider = None
 
     async def check_phone(self, phone: CanonicalPhone, ip: str = "127.0.0.1") -> PhoneCheckResponse:
         """Validate a normalized Nigerian phone and check whether it is already registered."""
@@ -140,7 +152,11 @@ class AuthService:
         phone_dispatched = False
         email_dispatched = False
         try:
-            await self.send_otp(CanonicalPhone(payload.phone), check_user_exists=False)
+            await self.send_otp(
+                CanonicalPhone(payload.phone),
+                check_user_exists=False,
+                channel=payload.otp_channel,
+            )
             phone_dispatched = True
             await dispatch_email_verification_otp(
                 redis_client=self._redis,
@@ -197,8 +213,27 @@ class AuthService:
         refresh_token = create_refresh_token(user.id, user.role, self._settings)
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
-    async def send_otp(self, phone: CanonicalPhone, *, check_user_exists: bool = True) -> None:
-        """Generate and store an OTP in Redis, dispatching it to the user.
+    async def _get_active_user_by_phone(self, phone: CanonicalPhone) -> User:
+        query = select(User).where(User.phone == phone)
+        result = await self._db.execute(query)
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise UserNotFoundError(
+                detail="No account found with this phone number. Please register first.",
+                context={"phone": phone[-4:]},
+            )
+        if not user.is_active:
+            raise InactiveUserError(context={"user_id": str(user.id)})
+        return user
+
+    async def send_otp(
+        self,
+        phone: CanonicalPhone,
+        *,
+        check_user_exists: bool = True,
+        channel: PhoneVerifyChannel | None = None,
+    ) -> None:
+        """Generate and dispatch a phone OTP via Twilio Verify or Redis + SMS.
 
         The CanonicalPhone annotation is the guarantee that `phone` is already
         in canonical form: normalization happens once at the schema boundary via
@@ -208,16 +243,7 @@ class AuthService:
         could never find.
         """
         if check_user_exists:
-            query = select(User).where(User.phone == phone)
-            result = await self._db.execute(query)
-            user = result.scalar_one_or_none()
-            if user is None:
-                raise UserNotFoundError(
-                    detail="No account found with this phone number. Please register first.",
-                    context={"phone": phone[-4:]},
-                )
-            if not user.is_active:
-                raise InactiveUserError(context={"user_id": str(user.id)})
+            user = await self._get_active_user_by_phone(phone)
             if user.is_phone_verified:
                 raise PhoneAlreadyVerifiedError(
                     detail="Phone number is already verified. Please log in.",
@@ -274,6 +300,28 @@ class AuthService:
                 context={"phone": phone[-4:], "retry_after": retry_after},
             )
 
+        resolved_channel: PhoneVerifyChannel = (
+            channel or self._settings.TWILIO_VERIFY_DEFAULT_CHANNEL
+        )
+        if self._verification_provider is not None:
+            try:
+                await self._verification_provider.start_verification(
+                    to=phone,
+                    channel=resolved_channel,
+                )
+            except Exception:
+                await self._redis.delete(cooldown_key)
+                await self._redis.decr(rate_key)
+                raise
+
+            logger.info(
+                "otp_dispatched",
+                phone=f"...{phone[-4:]}",
+                channel=resolved_channel,
+                provider="twilio_verify",
+            )
+            return
+
         otp = generate_otp(self._settings)
         redis_key = f"otp:{phone}"
         ttl_seconds = self._settings.OTP_EXPIRE_MINUTES * 60
@@ -303,6 +351,33 @@ class AuthService:
         # narrow through CanonicalPhone: a raw "0815…" here would look up a key
         # that send_otp never created.
         phone = CanonicalPhone(payload.phone)
+        if self._verification_provider is not None:
+            # Verify account existence & status before burning a Twilio check attempt.
+            user = await self._get_active_user_by_phone(phone)
+            approved = await self._verification_provider.check_verification(
+                to=phone,
+                code=payload.otp,
+                channel="sms",
+            )
+            if not approved:
+                raise InvalidOTPError(context={"phone": phone[-4:]})
+
+            if not user.is_phone_verified:
+                user.is_phone_verified = True
+                user.phone_verified_at = datetime.now(UTC)
+                await self._db.commit()
+                await self._db.refresh(user)
+
+            logger.info(
+                "otp_verified",
+                user_id=str(user.id),
+                role=user.role,
+                provider="twilio_verify",
+            )
+            access_token = create_access_token(user.id, user.role, self._settings)
+            refresh_token = create_refresh_token(user.id, user.role, self._settings)
+            return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+
         redis_key = f"otp:{phone}"
         stored_otp = await self._redis.get(redis_key)
         if stored_otp is None:
@@ -311,17 +386,7 @@ class AuthService:
         if not secrets.compare_digest(str(stored_otp), payload.otp):
             raise InvalidOTPError(context={"phone": phone[-4:]})
 
-        query = select(User).where(User.phone == phone)
-        result = await self._db.execute(query)
-        user = result.scalar_one_or_none()
-        if user is None:
-            raise UserNotFoundError(
-                detail="No account found with this phone number. Please register first.",
-                context={"phone": phone[-4:]},
-            )
-
-        if not user.is_active:
-            raise InactiveUserError(context={"user_id": str(user.id)})
+        user = await self._get_active_user_by_phone(phone)
 
         if not user.is_phone_verified:
             user.is_phone_verified = True
