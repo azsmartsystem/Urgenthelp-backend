@@ -1,6 +1,7 @@
 """Helper service — helper profile management and geospatial nearby search."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import structlog
@@ -12,6 +13,11 @@ from app.core.exceptions import (
 )
 from app.core.geo import bounding_box, haversine_km
 from app.modules.bookings.model import Booking
+from app.modules.bookings.service import (
+    DEFAULT_CONFLICT_BUFFER_MINUTES,
+    booking_time_window,
+    windows_overlap,
+)
 from app.modules.categories.model import ServiceCategory
 from app.modules.helpers.model import HelperCategory, HelperProfile
 from app.modules.helpers.schemas import (
@@ -34,8 +40,13 @@ logger = structlog.get_logger(__name__)
 class HelperService:
     """Business logic for helper profiles and nearby helper discovery."""
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        conflict_buffer_minutes: int = DEFAULT_CONFLICT_BUFFER_MINUTES,
+    ) -> None:
         self._db = db
+        self._conflict_buffer_minutes = conflict_buffer_minutes
 
     async def _get_active_helper_user(self, user_id: uuid.UUID) -> User:
         result = await self._db.execute(select(User).where(User.id == user_id))
@@ -210,12 +221,34 @@ class HelperService:
         busy_helper_ids: set[uuid.UUID] = set()
         if candidate_user_ids:
             busy_result = await self._db.execute(
-                select(Booking.helper_id).where(
+                select(Booking).where(
                     Booking.helper_id.in_(candidate_user_ids),
                     Booking.status.in_(Booking.ACTIVE_HELPER_STATUSES),
                 )
             )
-            busy_helper_ids = {hid for hid in busy_result.scalars().all() if hid is not None}
+            now = datetime.now(UTC)
+            probe_end = now + timedelta(hours=1)
+            for active_booking in busy_result.scalars().all():
+                if active_booking.helper_id is None:
+                    continue
+                if active_booking.status in Booking.IN_FLIGHT_HELPER_STATUSES:
+                    busy_helper_ids.add(active_booking.helper_id)
+                    continue
+                act_start, act_end = booking_time_window(
+                    scheduled_at=active_booking.scheduled_at,
+                    created_at=active_booking.created_at,
+                    duration_hours=active_booking.duration_hours,
+                    now=now,
+                    status=active_booking.status,
+                )
+                if windows_overlap(
+                    now,
+                    probe_end,
+                    act_start,
+                    act_end,
+                    buffer_minutes=self._conflict_buffer_minutes,
+                ):
+                    busy_helper_ids.add(active_booking.helper_id)
 
         nearby: list[NearbyHelperResponse] = []
         for profile, user in rows:

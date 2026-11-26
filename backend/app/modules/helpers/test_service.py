@@ -14,6 +14,7 @@ from app.core.exceptions import (
 from app.core.geo import bounding_box, haversine_km
 from app.core.security import TokenPayload, get_current_user
 from app.main import app
+from app.modules.bookings.model import Booking
 from app.modules.categories.model import ServiceCategory
 from app.modules.helpers.model import HelperProfile
 from app.modules.helpers.router import _get_service as _get_helper_service
@@ -388,11 +389,27 @@ async def test_get_helpers_nearby_marks_busy_helpers_and_sorts_them_last() -> No
     busy_profile = _make_profile(busy_close, service_radius_km=10.0)
     free_profile = _make_profile(free_farther, service_radius_km=10.0)
 
+    busy_booking = Booking(
+        id=uuid.uuid4(),
+        customer_id=uuid.uuid4(),
+        helper_id=busy_close.id,
+        category_id=uuid.uuid4(),
+        status="in_progress",
+        urgency="standard",
+        duration_hours=1.0,
+        matching_mode="manual",
+        address="Yaba, Lagos",
+        latitude=6.5160,
+        longitude=3.3900,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
     db = AsyncMock()
     db.execute = AsyncMock(
         side_effect=[
             _rows_all_result([(busy_profile, busy_close), (free_profile, free_farther)]),
-            _scalars_all_result([busy_close.id]),
+            _scalars_all_result([busy_booking]),
         ]
     )
     service = HelperService(db=db)
@@ -401,6 +418,43 @@ async def test_get_helpers_nearby_marks_busy_helpers_and_sorts_them_last() -> No
     assert [r.full_name for r in results] == ["Free Farther Helper", "Busy Close Helper"]
     assert results[0].is_busy is False
     assert results[1].is_busy is True
+
+
+@pytest.mark.asyncio
+async def test_get_helpers_nearby_ignores_non_overlapping_future_accepted_booking() -> None:
+    scheduled_helper = _make_user(
+        full_name="Scheduled Later Helper", latitude=6.5160, longitude=3.3900
+    )
+    scheduled_profile = _make_profile(scheduled_helper, service_radius_km=10.0)
+    future_booking = Booking(
+        id=uuid.uuid4(),
+        customer_id=uuid.uuid4(),
+        helper_id=scheduled_helper.id,
+        category_id=uuid.uuid4(),
+        status="accepted",
+        urgency="standard",
+        duration_hours=2.0,
+        scheduled_at=datetime.now(UTC) + timedelta(days=2),
+        matching_mode="manual",
+        address="Yaba, Lagos",
+        latitude=6.5160,
+        longitude=3.3900,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _rows_all_result([(scheduled_profile, scheduled_helper)]),
+            _scalars_all_result([future_booking]),
+        ]
+    )
+    service = HelperService(db=db)
+
+    results = await service.get_helpers_nearby(latitude=6.5158, longitude=3.3898, radius_km=10.0)
+    assert len(results) == 1
+    assert results[0].is_busy is False
 
 
 # ─── Router Tests ───────────────────────────────────────────────────────────

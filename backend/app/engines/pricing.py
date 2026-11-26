@@ -8,10 +8,12 @@ Replace the formula with a regression model later without touching the interface
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import structlog
 
 logger = structlog.get_logger(__name__)
+LAGOS_TZ = ZoneInfo("Africa/Lagos")
 
 
 @dataclass(frozen=True)
@@ -63,7 +65,9 @@ PEAK_HOUR_MULTIPLIER: float = 1.20
 
 
 def _is_peak_hour(dt: datetime) -> bool:
-    """Morning rush (7-9am) or evening rush (5-8pm) on weekdays."""
+    """Morning rush (7-9am) or evening rush (5-8pm) on weekdays in Africa/Lagos."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(LAGOS_TZ)
     weekday = dt.weekday()  # 0=Monday, 6=Sunday
     hour = dt.hour
     is_weekday = weekday < 5

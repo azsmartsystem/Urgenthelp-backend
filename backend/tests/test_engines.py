@@ -1,6 +1,6 @@
 """Unit tests for pure AI engines."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from app.engines.fraud import FraudContext, run_fraud_check
@@ -186,6 +186,30 @@ def test_pricing_engine_applies_peak_hour_multiplier_on_weekday_rush() -> None:
     )
 
     assert morning_peak.recommended == round(off_peak.recommended * PEAK_HOUR_MULTIPLIER, 2)
+
+
+def test_pricing_engine_converts_aware_utc_to_africa_lagos_for_peak_hours() -> None:
+    # Monday 06:30 UTC == 07:30 WAT (morning peak in Lagos)
+    lagos_morning_peak = recommend_price(
+        PricingRequest(
+            category="cleaning",
+            distance_km=0.0,
+            urgency="standard",
+            requested_at=datetime(2026, 10, 5, 6, 30, tzinfo=UTC),
+        )
+    )
+    # Monday 09:30 UTC == 10:30 WAT (off-peak in Lagos, even though 09:30 UTC looks like 9am)
+    lagos_off_peak = recommend_price(
+        PricingRequest(
+            category="cleaning",
+            distance_km=0.0,
+            urgency="standard",
+            requested_at=datetime(2026, 10, 5, 9, 30, tzinfo=UTC),
+        )
+    )
+
+    assert lagos_off_peak.recommended == 5_000.0
+    assert lagos_morning_peak.recommended == round(5_000.0 * PEAK_HOUR_MULTIPLIER, 2)
 
 
 def test_trust_score_calculation() -> None:

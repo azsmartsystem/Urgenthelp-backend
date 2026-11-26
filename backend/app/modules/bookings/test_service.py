@@ -23,8 +23,13 @@ from app.modules.bookings.router import _get_service as _get_booking_service
 from app.modules.bookings.schemas import (
     CreateBookingRequest,
     PaginatedBookingsResponse,
+    RescheduleBookingRequest,
 )
-from app.modules.bookings.service import BookingService
+from app.modules.bookings.service import (
+    BookingService,
+    booking_time_window,
+    windows_overlap,
+)
 from app.modules.categories.model import ServiceCategory
 from app.modules.helpers.model import HelperProfile
 from app.modules.helpers.router import _get_booking_service as _get_helper_booking_service
@@ -109,8 +114,11 @@ def _make_booking(
     matching_mode: str = "auto",
     helper_id: uuid.UUID | None = None,
     offers: list[BookingOffer] | None = None,
+    scheduled_at: datetime | None = None,
+    duration_hours: float = 1.0,
+    created_at: datetime | None = None,
 ) -> Booking:
-    now = datetime.now(UTC)
+    now = created_at or datetime.now(UTC)
     booking = Booking(
         id=uuid.uuid4(),
         customer_id=customer.id,
@@ -118,7 +126,8 @@ def _make_booking(
         category_id=category.id,
         status=status,
         urgency="standard",
-        duration_hours=1.0,
+        duration_hours=duration_hours,
+        scheduled_at=scheduled_at,
         matching_mode=matching_mode,
         address="14 Admiralty Way, Lekki Phase 1, Lagos",
         latitude=6.4474,
@@ -214,6 +223,7 @@ def test_booking_state_machine_transitions() -> None:
 
     b.status = "accepted"
     assert b.can_transition_to("en_route")
+    assert b.can_transition_to("requested")
     assert b.can_transition_to("cancelled")
     assert not b.can_transition_to("in_progress")
 
@@ -329,6 +339,7 @@ async def test_match_helpers_auto_broadcasts_top_3_and_excludes_busy() -> None:
         _make_profile(h, categories=[cat], avg_rating=5.0 - i * 0.2) for i, h in enumerate(helpers)
     ]
     busy_helper = helpers[0]  # Closest helper is busy -> must be excluded from matching!
+    busy_booking = _make_booking(customer, cat, status="accepted", helper_id=busy_helper.id)
 
     db = AsyncMock()
     db.add = MagicMock()
@@ -337,7 +348,7 @@ async def test_match_helpers_auto_broadcasts_top_3_and_excludes_busy() -> None:
             _scalar_result(customer),
             _scalar_result(booking),
             _rows_all_result(list(zip(profiles, helpers, strict=True))),
-            _scalars_all_result([busy_helper.id]),
+            _scalars_all_result([busy_booking]),
         ]
     )
 
@@ -370,6 +381,7 @@ async def test_match_helpers_raises_when_all_helpers_busy() -> None:
 
     busy_helper = _make_user(role="helper", latitude=6.448, longitude=3.472)
     busy_profile = _make_profile(busy_helper, categories=[cat])
+    busy_booking = _make_booking(customer, cat, status="accepted", helper_id=busy_helper.id)
 
     db = AsyncMock()
     db.execute = AsyncMock(
@@ -377,7 +389,7 @@ async def test_match_helpers_raises_when_all_helpers_busy() -> None:
             _scalar_result(customer),
             _scalar_result(booking),
             _rows_all_result([(busy_profile, busy_helper)]),
-            _scalars_all_result([busy_helper.id]),
+            _scalars_all_result([busy_booking]),
         ]
     )
     service = BookingService(db=db, push_provider=MockPushProvider())
@@ -400,6 +412,7 @@ async def test_match_helpers_manual_returns_candidates_with_optional_busy_last()
     )
     busy_profile = _make_profile(busy_helper, categories=[cat])
     free_profile = _make_profile(free_helper, categories=[cat])
+    busy_booking = _make_booking(customer, cat, status="accepted", helper_id=busy_helper.id)
 
     db = AsyncMock()
     db.execute = AsyncMock(
@@ -407,7 +420,7 @@ async def test_match_helpers_manual_returns_candidates_with_optional_busy_last()
             _scalar_result(customer),
             _scalar_result(booking),
             _rows_all_result([(busy_profile, busy_helper), (free_profile, free_helper)]),
-            _scalars_all_result([busy_helper.id]),
+            _scalars_all_result([busy_booking]),
         ]
     )
     push = MockPushProvider()
@@ -432,13 +445,14 @@ async def test_select_helper_dispatches_single_offer_and_rejects_busy() -> None:
     booking = _make_booking(customer, cat, status="requested", matching_mode="manual")
 
     # Busy case
+    busy_booking = _make_booking(customer, cat, status="accepted", helper_id=helper.id)
     db_busy = AsyncMock()
     db_busy.execute = AsyncMock(
         side_effect=[
             _scalar_result(customer),
             _scalar_result(booking),
             _first_row_result((profile, helper)),
-            _scalars_all_result([helper.id]),
+            _scalars_all_result([busy_booking]),
         ]
     )
     with pytest.raises(HelperBusyError):
@@ -513,6 +527,7 @@ async def test_accept_booking_assigns_helper_and_supersedes_other_offers() -> No
         side_effect=[
             _scalar_result(h1),
             _scalar_result(booking),
+            MagicMock(),  # HelperProfile FOR UPDATE lock
             _scalars_all_result([]),
         ]
     )
@@ -558,6 +573,7 @@ async def test_accept_booking_rejects_already_accepted_and_unoffered_and_busy_ra
         side_effect=[
             _scalar_result(h1),
             _scalar_result(matched_booking),
+            MagicMock(),  # HelperProfile FOR UPDATE lock
             _scalars_all_result([]),
         ]
     )
@@ -787,5 +803,283 @@ def test_bookings_and_helper_queue_routers() -> None:
         assert client.get(f"/api/v1/bookings/{booking.id}").status_code == 200
         assert client.post(f"/api/v1/bookings/{booking.id}/en-route").status_code == 200
         assert client.get("/api/v1/helpers/me/bookings").status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ─── Scheduling, Slot Overlap & Reschedule Tests ─────────────────────────────
+
+
+def test_scheduled_at_schema_validation_and_utc_normalization() -> None:
+    # Aware +01:00 converts to UTC
+    future_lagos = (datetime.now(UTC) + timedelta(hours=3)).isoformat().replace("+00:00", "+01:00")
+    req = CreateBookingRequest.model_validate(
+        {
+            "category_id": str(uuid.uuid4()),
+            "address": "14 Admiralty Way, Lekki",
+            "latitude": 6.4474,
+            "longitude": 3.4723,
+            "scheduled_at": future_lagos,
+        }
+    )
+    assert req.scheduled_at is not None
+    assert req.scheduled_at.tzinfo == UTC
+
+    # Within 5-minute grace window is accepted
+    within_grace = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
+    req_grace = CreateBookingRequest.model_validate(
+        {
+            "category_id": str(uuid.uuid4()),
+            "address": "14 Admiralty Way, Lekki",
+            "latitude": 6.4474,
+            "longitude": 3.4723,
+            "scheduled_at": within_grace,
+        }
+    )
+    assert req_grace.scheduled_at is not None
+
+    # Naive datetime rejected
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        CreateBookingRequest(
+            category_id=uuid.uuid4(),
+            address="14 Admiralty Way, Lekki",
+            latitude=6.4474,
+            longitude=3.4723,
+            scheduled_at=datetime(2027, 1, 10, 9, 0),
+        )
+
+    # Past > 5 min rejected
+    with pytest.raises(ValidationError, match="in the past"):
+        CreateBookingRequest(
+            category_id=uuid.uuid4(),
+            address="14 Admiralty Way, Lekki",
+            latitude=6.4474,
+            longitude=3.4723,
+            scheduled_at=datetime.now(UTC) - timedelta(minutes=10),
+        )
+
+    # RescheduleBookingRequest requires concrete future scheduled_at
+    with pytest.raises(ValidationError):
+        RescheduleBookingRequest.model_validate({"scheduled_at": None})
+    with pytest.raises(ValidationError, match="in the past"):
+        RescheduleBookingRequest(scheduled_at=datetime.now(UTC) - timedelta(minutes=10))
+
+
+def test_booking_time_window_and_windows_overlap_with_buffer() -> None:
+    now = datetime(2026, 11, 27, 10, 0, tzinfo=UTC)
+    start_a, end_a = booking_time_window(
+        scheduled_at=datetime(2026, 11, 28, 9, 0, tzinfo=UTC),
+        created_at=now,
+        duration_hours=2.0,
+        now=now,
+        status="accepted",
+    )
+    # 09:00-11:00 vs 11:15-12:15 -> overlaps with 30m buffer (11:15 < 11:30)
+    start_b, end_b = booking_time_window(
+        scheduled_at=datetime(2026, 11, 28, 11, 15, tzinfo=UTC),
+        created_at=now,
+        duration_hours=1.0,
+        now=now,
+        status="requested",
+    )
+    assert windows_overlap(start_a, end_a, start_b, end_b, buffer_minutes=30) is True
+    assert windows_overlap(start_a, end_a, start_b, end_b, buffer_minutes=10) is False
+
+    # Boundary: exactly 30m gap (11:30 start) does NOT overlap with 30m buffer
+    start_c, end_c = booking_time_window(
+        scheduled_at=datetime(2026, 11, 28, 11, 30, tzinfo=UTC),
+        created_at=now,
+        duration_hours=1.0,
+        now=now,
+        status="requested",
+    )
+    assert windows_overlap(start_a, end_a, start_c, end_c, buffer_minutes=30) is False
+
+    # Overrunning in_progress job clamps end to now so immediate ASAP jobs still conflict
+    in_prog_start, in_prog_end = booking_time_window(
+        scheduled_at=None,
+        created_at=now - timedelta(hours=3),
+        duration_hours=1.0,
+        now=now,
+        status="in_progress",
+    )
+    assert in_prog_start == now - timedelta(hours=3)
+    assert in_prog_end == now
+
+
+@pytest.mark.asyncio
+async def test_create_booking_uses_scheduled_at_for_lagos_peak_pricing() -> None:
+    customer = _make_user(role="customer")
+    cat = _make_category(name="Cleaning", slug="cleaning", base_price_ngn=5000.0)
+
+    def _populate(obj: object) -> None:
+        if isinstance(obj, Booking):
+            now = datetime.now(UTC)
+            obj.id = uuid.uuid4()
+            obj.created_at = now
+            obj.updated_at = now
+
+    # Future Monday 07:00 UTC == 08:00 WAT (peak) vs Monday 10:00 UTC == 11:00 WAT (off-peak)
+    days_ahead = (7 - datetime.now(UTC).weekday()) % 7 or 7
+    next_monday = (datetime.now(UTC) + timedelta(days=days_ahead)).replace(
+        hour=7, minute=0, second=0, microsecond=0
+    )
+    peak_slot = next_monday
+    off_peak_slot = next_monday.replace(hour=10)
+
+    db_peak = AsyncMock()
+    db_peak.add = MagicMock()
+    db_peak.execute = AsyncMock(side_effect=[_scalar_result(customer), _scalar_result(cat)])
+    db_peak.refresh = AsyncMock(side_effect=_populate)
+    peak_res = await BookingService(db=db_peak, push_provider=MockPushProvider()).create_booking(
+        customer.id,
+        CreateBookingRequest(
+            category_id=cat.id,
+            address="14 Admiralty Way, Lekki Phase 1",
+            latitude=6.4474,
+            longitude=3.4723,
+            scheduled_at=peak_slot,
+        ),
+    )
+
+    db_off = AsyncMock()
+    db_off.add = MagicMock()
+    db_off.execute = AsyncMock(side_effect=[_scalar_result(customer), _scalar_result(cat)])
+    db_off.refresh = AsyncMock(side_effect=_populate)
+    off_res = await BookingService(db=db_off, push_provider=MockPushProvider()).create_booking(
+        customer.id,
+        CreateBookingRequest(
+            category_id=cat.id,
+            address="14 Admiralty Way, Lekki Phase 1",
+            latitude=6.4474,
+            longitude=3.4723,
+            scheduled_at=off_peak_slot,
+        ),
+    )
+
+    assert peak_res.scheduled_at == peak_slot
+    assert off_res.recommended_price == 5000.0
+    assert peak_res.recommended_price == 6000.0  # 1.2x peak multiplier
+
+
+@pytest.mark.asyncio
+async def test_reschedule_booking_transitions_clears_offers_notifies_and_reprices() -> None:
+    customer = _make_user(role="customer")
+    stranger = _make_user(role="customer")
+    helper = _make_user(role="helper")
+    cat = _make_category(name="Cleaning", slug="cleaning", base_price_ngn=5000.0)
+
+    days_ahead = (7 - datetime.now(UTC).weekday()) % 7 or 7
+    next_monday = (datetime.now(UTC) + timedelta(days=days_ahead)).replace(
+        hour=7, minute=0, second=0, microsecond=0
+    )
+
+    # 1. Accepted booking -> reverts to requested, releases helper, clears offers, notifies helper
+    accepted = _make_booking(customer, cat, status="accepted", helper_id=helper.id)
+    accepted.agreed_price = 5000.0
+    accepted.offers = [_make_offer(accepted, helper.id, status="accepted")]
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=[_scalar_result(customer), _scalar_result(accepted)])
+    push = MockPushProvider()
+    res = await BookingService(db=db, push_provider=push).reschedule_booking(
+        accepted.id, customer.id, next_monday
+    )
+    assert res.status == "requested"
+    assert res.helper_id is None
+    assert res.agreed_price is None
+    assert res.offers == []
+    assert res.scheduled_at == next_monday
+    assert res.recommended_price == 6000.0
+    assert len(push.sent_pushes) == 1
+    assert push.sent_pushes[0]["data"] == {
+        "event": "booking.rescheduled",
+        "booking_id": str(accepted.id),
+    }
+
+    # 2. Requested booking -> stays requested, no push notification
+    requested = _make_booking(customer, cat, status="requested")
+    db_req = AsyncMock()
+    db_req.execute = AsyncMock(side_effect=[_scalar_result(customer), _scalar_result(requested)])
+    push_req = MockPushProvider()
+    res_req = await BookingService(db=db_req, push_provider=push_req).reschedule_booking(
+        requested.id, customer.id, next_monday.replace(hour=10)
+    )
+    assert res_req.status == "requested"
+    assert res_req.recommended_price == 5000.0
+    assert len(push_req.sent_pushes) == 0
+
+    # 3. Non-owner forbidden
+    db_forb = AsyncMock()
+    db_forb.execute = AsyncMock(side_effect=[_scalar_result(stranger), _scalar_result(requested)])
+    with pytest.raises(ForbiddenError):
+        await BookingService(db=db_forb, push_provider=MockPushProvider()).reschedule_booking(
+            requested.id, stranger.id, next_monday
+        )
+
+    # 4. Disallowed status (en_route) -> BookingStateError
+    en_route = _make_booking(customer, cat, status="en_route", helper_id=helper.id)
+    db_state = AsyncMock()
+    db_state.execute = AsyncMock(side_effect=[_scalar_result(customer), _scalar_result(en_route)])
+    with pytest.raises(BookingStateError):
+        await BookingService(db=db_state, push_provider=MockPushProvider()).reschedule_booking(
+            en_route.id, customer.id, next_monday
+        )
+
+
+def test_bookings_list_filter_validation_and_reschedule_router() -> None:
+    customer = _make_user(role="customer")
+    cat = _make_category()
+    target_slot = datetime.now(UTC) + timedelta(days=1)
+    booking = _make_booking(customer, cat, status="requested", scheduled_at=target_slot)
+    booking_resp = BookingService._to_booking_response(booking)
+    paginated = PaginatedBookingsResponse(items=[booking_resp], total=1, page=1, page_size=20)
+
+    mock_service = AsyncMock(spec=BookingService)
+    mock_service.list_customer_bookings = AsyncMock(return_value=paginated)
+    mock_service.list_helper_bookings = AsyncMock(return_value=paginated)
+    mock_service.reschedule_booking = AsyncMock(return_value=booking_resp)
+
+    now = datetime.now(UTC)
+    app.dependency_overrides[get_current_user] = lambda: TokenPayload(
+        sub=str(customer.id),
+        role="customer",
+        iat=now,
+        exp=now + timedelta(hours=1),
+        type="access",
+    )
+    app.dependency_overrides[_get_booking_service] = lambda: mock_service
+    app.dependency_overrides[_get_helper_booking_service] = lambda: mock_service
+    try:
+        client = TestClient(app)
+
+        # Valid query params forwarded
+        ok = client.get(
+            "/api/v1/bookings",
+            params={
+                "scheduled_from": now.isoformat(),
+                "scheduled_to": (now + timedelta(days=7)).isoformat(),
+                "sort_by": "created_at",
+                "sort_order": "asc",
+            },
+        )
+        assert ok.status_code == 200
+        mock_service.list_customer_bookings.assert_awaited_once()
+
+        # Inverted range -> 422 on both customer and helper endpoints
+        bad_range = {
+            "scheduled_from": (now + timedelta(days=5)).isoformat(),
+            "scheduled_to": now.isoformat(),
+        }
+        assert client.get("/api/v1/bookings", params=bad_range).status_code == 422
+        assert client.get("/api/v1/helpers/me/bookings", params=bad_range).status_code == 422
+
+        # Reschedule endpoint
+        resched = client.patch(
+            f"/api/v1/bookings/{booking.id}/reschedule",
+            json={"scheduled_at": target_slot.isoformat()},
+        )
+        assert resched.status_code == 200
+        assert resched.json()["id"] == str(booking.id)
+        mock_service.reschedule_booking.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()

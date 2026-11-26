@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     COMMISSION_RATE: float = Field(default=0.10, ge=0.0, le=1.0)  # 10%
     MAX_HELPER_MATCH_RADIUS_KM: float = Field(default=20.0, ge=1.0)
     DEFAULT_MATCH_RADIUS_KM: float = Field(default=5.0, ge=1.0)
+    BOOKING_CONFLICT_BUFFER_MINUTES: int = Field(default=30, ge=0)
 
     @field_validator("DEV_STATIC_OTP", mode="before")
     @classmethod

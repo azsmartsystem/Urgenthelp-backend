@@ -42,7 +42,7 @@ class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "helper_id",
             unique=True,
             postgresql_where=text(
-                "helper_id IS NOT NULL AND status IN ('accepted', 'en_route', 'in_progress')"
+                "helper_id IS NOT NULL AND status IN ('en_route', 'in_progress')"
             ),
         ),
     )
@@ -85,6 +85,11 @@ class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=1.0,
         server_default=text("1.0"),
     )
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
     matching_mode: Mapped[str] = mapped_column(
         Enum("auto", "manual", name="booking_matching_mode_enum"),
         nullable=False,
@@ -121,14 +126,16 @@ class Booking(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         lazy="selectin",
     )
 
-    # Statuses during which a helper is actively committed and considered busy.
+    # Statuses during which a helper is actively committed for overlapping slots.
     ACTIVE_HELPER_STATUSES: ClassVar[tuple[str, ...]] = ("accepted", "en_route", "in_progress")
+    # Statuses during which a helper is physically executing or travelling to a single job.
+    IN_FLIGHT_HELPER_STATUSES: ClassVar[tuple[str, ...]] = ("en_route", "in_progress")
 
     # Valid state transitions — enforced by BookingService, not the DB.
     VALID_TRANSITIONS: ClassVar[dict[str, list[str]]] = {
         "requested": ["matched", "cancelled"],
         "matched": ["accepted", "requested", "cancelled"],
-        "accepted": ["en_route", "cancelled"],
+        "accepted": ["en_route", "requested", "cancelled"],
         "en_route": ["in_progress"],
         "in_progress": ["completed", "disputed"],
         "completed": [],

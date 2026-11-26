@@ -1,7 +1,7 @@
 """Booking service — lifecycle, pricing, dual-mode matching, and state machine."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import structlog
@@ -25,6 +25,7 @@ from app.modules.bookings.model import Booking, BookingOffer
 from app.modules.bookings.schemas import (
     BookingOfferSummary,
     BookingResponse,
+    BookingSortBy,
     BookingStatus,
     BookingUrgency,
     CreateBookingRequest,
@@ -35,12 +36,13 @@ from app.modules.bookings.schemas import (
     OfferStatus,
     PaginatedBookingsResponse,
     PriceRangeSchema,
+    SortOrder,
 )
 from app.modules.categories.model import ServiceCategory
 from app.modules.helpers.model import HelperCategory, HelperProfile
 from app.modules.notifications.push import PushProvider
 from app.modules.users.model import User
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -51,14 +53,59 @@ AUTO_MATCH_TOP_N = 3
 MANUAL_MATCH_TOP_N = 10
 MAX_MATCH_SEARCH_RADIUS_KM = 50.0
 DEFAULT_AVG_RESPONSE_MINUTES = 15.0
+DEFAULT_CONFLICT_BUFFER_MINUTES = 30
+
+
+def ensure_utc(dt: datetime) -> datetime:
+    """Normalize aware datetimes to UTC and tag naive datetimes as UTC."""
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def booking_time_window(
+    *,
+    scheduled_at: datetime | None,
+    created_at: datetime | None,
+    duration_hours: float,
+    now: datetime,
+    status: str | None = None,
+) -> tuple[datetime, datetime]:
+    """Return the UTC [start, end] window for a booking, clamping overrunning in-flight jobs."""
+    base_start = scheduled_at if scheduled_at is not None else (created_at or now)
+    start = ensure_utc(base_start)
+    end = start + timedelta(hours=duration_hours)
+    now_utc = ensure_utc(now)
+    if status in Booking.IN_FLIGHT_HELPER_STATUSES and end < now_utc:
+        end = now_utc
+    return start, end
+
+
+def windows_overlap(
+    start_a: datetime,
+    end_a: datetime,
+    start_b: datetime,
+    end_b: datetime,
+    *,
+    buffer_minutes: int,
+) -> bool:
+    """Return True if two [start, end] windows overlap when padded by buffer_minutes."""
+    buf = timedelta(minutes=buffer_minutes)
+    return start_a < (end_b + buf) and start_b < (end_a + buf)
 
 
 class BookingService:
     """Business logic for booking creation, matching, and state transitions."""
 
-    def __init__(self, db: AsyncSession, push_provider: PushProvider) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        push_provider: PushProvider,
+        conflict_buffer_minutes: int = DEFAULT_CONFLICT_BUFFER_MINUTES,
+    ) -> None:
         self._db = db
         self._push = push_provider
+        self._conflict_buffer_minutes = conflict_buffer_minutes
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -100,16 +147,49 @@ class BookingService:
             raise BookingNotFoundError(context={"booking_id": str(booking_id)})
         return booking
 
-    async def _get_busy_helper_ids(self, helper_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    async def _get_busy_helper_ids(
+        self,
+        helper_ids: list[uuid.UUID],
+        *,
+        target_booking: Booking,
+    ) -> set[uuid.UUID]:
         if not helper_ids:
             return set()
         result = await self._db.execute(
-            select(Booking.helper_id).where(
+            select(Booking).where(
                 Booking.helper_id.in_(helper_ids),
                 Booking.status.in_(Booking.ACTIVE_HELPER_STATUSES),
+                Booking.id != target_booking.id,
             )
         )
-        return {hid for hid in result.scalars().all() if hid is not None}
+        now = datetime.now(UTC)
+        target_start, target_end = booking_time_window(
+            scheduled_at=target_booking.scheduled_at,
+            created_at=target_booking.created_at,
+            duration_hours=target_booking.duration_hours,
+            now=now,
+            status=target_booking.status,
+        )
+        busy_ids: set[uuid.UUID] = set()
+        for active_booking in result.scalars().all():
+            if active_booking.helper_id is None:
+                continue
+            active_start, active_end = booking_time_window(
+                scheduled_at=active_booking.scheduled_at,
+                created_at=active_booking.created_at,
+                duration_hours=active_booking.duration_hours,
+                now=now,
+                status=active_booking.status,
+            )
+            if windows_overlap(
+                target_start,
+                target_end,
+                active_start,
+                active_end,
+                buffer_minutes=self._conflict_buffer_minutes,
+            ):
+                busy_ids.add(active_booking.helper_id)
+        return busy_ids
 
     @staticmethod
     def _to_offer_summary(offer: BookingOffer) -> BookingOfferSummary:
@@ -140,6 +220,7 @@ class BookingService:
             status=cast(BookingStatus, booking.status),
             urgency=cast(BookingUrgency, booking.urgency),
             duration_hours=booking.duration_hours,
+            scheduled_at=booking.scheduled_at,
             matching_mode=cast(MatchingMode, booking.matching_mode),
             address=booking.address,
             latitude=booking.latitude,
@@ -172,6 +253,29 @@ class BookingService:
         except Exception as exc:
             logger.warning(
                 "booking_offer_push_failed",
+                booking_id=str(booking.id),
+                helper_id=str(helper_id),
+                error=str(exc),
+            )
+
+    async def _notify_helper_rescheduled(self, booking: Booking, helper_id: uuid.UUID) -> None:
+        category_label = booking.category.name
+        try:
+            await self._push.send_push(
+                token=f"helper:{helper_id}",
+                title="Booking Rescheduled by Customer",
+                body=(
+                    f"The {category_label} booking near {booking.address} "
+                    "was rescheduled and released."
+                ),
+                data={
+                    "event": "booking.rescheduled",
+                    "booking_id": str(booking.id),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "booking_reschedule_push_failed",
                 booking_id=str(booking.id),
                 helper_id=str(helper_id),
                 error=str(exc),
@@ -214,7 +318,7 @@ class BookingService:
                 category=category.slug,
                 distance_km=0.0,
                 urgency=payload.urgency,
-                requested_at=datetime.now(UTC),
+                requested_at=payload.scheduled_at or datetime.now(UTC),
                 duration_hours=payload.duration_hours,
                 base_price_override=category.base_price_ngn,
             )
@@ -226,6 +330,7 @@ class BookingService:
             status="requested",
             urgency=payload.urgency,
             duration_hours=payload.duration_hours,
+            scheduled_at=payload.scheduled_at,
             matching_mode=payload.matching_mode,
             address=payload.address,
             latitude=payload.latitude,
@@ -314,7 +419,7 @@ class BookingService:
 
         declined_ids = {o.helper_id for o in booking.offers if o.status == "declined"}
         candidate_user_ids = [user.id for _, user in rows]
-        busy_ids = await self._get_busy_helper_ids(candidate_user_ids)
+        busy_ids = await self._get_busy_helper_ids(candidate_user_ids, target_booking=booking)
 
         category_slug = booking.category.slug
         job = JobRequest(
@@ -509,7 +614,7 @@ class BookingService:
                 context={"helper_id": str(helper_id)},
             )
 
-        busy_ids = await self._get_busy_helper_ids([helper_id])
+        busy_ids = await self._get_busy_helper_ids([helper_id], target_booking=booking)
         if helper_id in busy_ids:
             raise HelperBusyError(context={"helper_id": str(helper_id)})
 
@@ -597,7 +702,11 @@ class BookingService:
                 context={"booking_id": str(booking_id), "helper_id": str(helper_id)}
             )
 
-        busy_ids = await self._get_busy_helper_ids([helper_id])
+        # Serialize concurrent accepts for the same helper before checking slot overlap.
+        await self._db.execute(
+            select(HelperProfile).where(HelperProfile.user_id == helper_id).with_for_update()
+        )
+        busy_ids = await self._get_busy_helper_ids([helper_id], target_booking=booking)
         if helper_id in busy_ids:
             raise HelperBusyError(context={"helper_id": str(helper_id)})
 
@@ -692,7 +801,13 @@ class BookingService:
             )
         self._assert_transition(booking, "en_route")
         booking.status = "en_route"
-        await self._db.commit()
+        try:
+            await self._db.commit()
+        except IntegrityError as exc:
+            await self._db.rollback()
+            raise HelperBusyError(
+                context={"helper_id": str(helper_id), "booking_id": str(booking_id)}
+            ) from exc
         await self._db.refresh(booking)
 
         logger.info("booking_en_route", booking_id=str(booking.id), helper_id=str(helper_id))
@@ -787,6 +902,72 @@ class BookingService:
         )
         return self._to_booking_response(booking)
 
+    async def reschedule_booking(
+        self,
+        booking_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        scheduled_at: datetime,
+    ) -> BookingResponse:
+        """Reschedule a booking to a concrete future appointment time."""
+        await self._get_active_user(customer_id, required_role="customer")
+        booking = await self._get_booking(booking_id, for_update=True)
+
+        if booking.customer_id != customer_id:
+            raise ForbiddenError(
+                detail="Only the booking owner can reschedule this booking.",
+                context={"booking_id": str(booking_id), "user_id": str(customer_id)},
+            )
+        if booking.status not in ("requested", "matched", "accepted"):
+            raise BookingStateError(
+                detail=(
+                    "Bookings can only be rescheduled in 'requested', 'matched', or 'accepted' "
+                    f"status (current: '{booking.status}')."
+                ),
+                context={"booking_id": str(booking_id), "current": booking.status},
+            )
+
+        previous_status = booking.status
+        previous_helper_id = booking.helper_id
+        normalized_scheduled_at = ensure_utc(scheduled_at)
+
+        booking.scheduled_at = normalized_scheduled_at
+        price = recommend_price(
+            PricingRequest(
+                category=booking.category.slug,
+                distance_km=0.0,
+                urgency=cast(BookingUrgency, booking.urgency),
+                requested_at=normalized_scheduled_at,
+                duration_hours=booking.duration_hours,
+                base_price_override=booking.category.base_price_ngn,
+            )
+        )
+        booking.min_price = price.minimum
+        booking.recommended_price = price.recommended
+        booking.max_price = price.maximum
+
+        if previous_status in ("matched", "accepted"):
+            self._assert_transition(booking, "requested")
+            booking.status = "requested"
+            booking.helper_id = None
+            booking.agreed_price = None
+            # Offers are bound to the previous slot; clear so helpers can be re-matched cleanly.
+            booking.offers.clear()
+
+        await self._db.commit()
+        await self._db.refresh(booking)
+
+        if previous_status == "accepted" and previous_helper_id is not None:
+            await self._notify_helper_rescheduled(booking, previous_helper_id)
+
+        logger.info(
+            "booking_rescheduled",
+            booking_id=str(booking.id),
+            customer_id=str(customer_id),
+            previous_status=previous_status,
+            scheduled_at=normalized_scheduled_at.isoformat(),
+        )
+        return self._to_booking_response(booking)
+
     # ─── Read / List ──────────────────────────────────────────────────────────
 
     async def get_booking(
@@ -812,30 +993,63 @@ class BookingService:
             )
         return self._to_booking_response(booking)
 
+    @staticmethod
+    def _build_list_filters_and_order(
+        base_filters: list[ColumnElement[bool]],
+        *,
+        status: BookingStatus | None,
+        scheduled_from: datetime | None,
+        scheduled_to: datetime | None,
+        sort_by: BookingSortBy,
+        sort_order: SortOrder,
+    ) -> tuple[list[ColumnElement[bool]], ColumnElement[datetime], ColumnElement[uuid.UUID]]:
+        effective_time = func.coalesce(Booking.scheduled_at, Booking.created_at)
+        filters = list(base_filters)
+        if status is not None:
+            filters.append(Booking.status == status)
+        if scheduled_from is not None:
+            filters.append(effective_time >= ensure_utc(scheduled_from))
+        if scheduled_to is not None:
+            filters.append(effective_time <= ensure_utc(scheduled_to))
+
+        sort_expr = effective_time if sort_by == "scheduled_at" else Booking.created_at
+        primary_order = sort_expr.asc() if sort_order == "asc" else sort_expr.desc()
+        tie_order = Booking.id.asc() if sort_order == "asc" else Booking.id.desc()
+        return filters, primary_order, tie_order
+
     async def list_customer_bookings(
         self,
         customer_id: uuid.UUID,
         *,
         status: BookingStatus | None = None,
+        scheduled_from: datetime | None = None,
+        scheduled_to: datetime | None = None,
+        sort_by: BookingSortBy = "scheduled_at",
+        sort_order: SortOrder = "desc",
         page: int = 1,
         page_size: int = 20,
     ) -> PaginatedBookingsResponse:
-        """List a customer's bookings newest-first with pagination."""
+        """List a customer's bookings with scheduling filters and pagination."""
         await self._get_active_user(customer_id, required_role="customer")
 
-        base_filter = [Booking.customer_id == customer_id]
-        if status is not None:
-            base_filter.append(Booking.status == status)
+        filters, primary_order, tie_order = self._build_list_filters_and_order(
+            [Booking.customer_id == customer_id],
+            status=status,
+            scheduled_from=scheduled_from,
+            scheduled_to=scheduled_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
 
-        total_result = await self._db.execute(select(func.count(Booking.id)).where(*base_filter))
+        total_result = await self._db.execute(select(func.count(Booking.id)).where(*filters))
         total = int(total_result.scalar_one())
 
         offset = (page - 1) * page_size
         rows_result = await self._db.execute(
             select(Booking)
             .options(selectinload(Booking.category), selectinload(Booking.offers))
-            .where(*base_filter)
-            .order_by(Booking.created_at.desc())
+            .where(*filters)
+            .order_by(primary_order, tie_order)
             .offset(offset)
             .limit(page_size)
         )
@@ -852,6 +1066,10 @@ class BookingService:
         helper_id: uuid.UUID,
         *,
         status: BookingStatus | None = None,
+        scheduled_from: datetime | None = None,
+        scheduled_to: datetime | None = None,
+        sort_by: BookingSortBy = "scheduled_at",
+        sort_order: SortOrder = "desc",
         page: int = 1,
         page_size: int = 20,
     ) -> PaginatedBookingsResponse:
@@ -870,9 +1088,14 @@ class BookingService:
             Booking.helper_id == helper_id,
             Booking.id.in_(pending_offer_subq),
         )
-        filters = [ownership_filter]
-        if status is not None:
-            filters.append(Booking.status == status)
+        filters, primary_order, tie_order = self._build_list_filters_and_order(
+            [ownership_filter],
+            status=status,
+            scheduled_from=scheduled_from,
+            scheduled_to=scheduled_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
 
         total_result = await self._db.execute(select(func.count(Booking.id)).where(*filters))
         total = int(total_result.scalar_one())
@@ -882,7 +1105,7 @@ class BookingService:
             select(Booking)
             .options(selectinload(Booking.category), selectinload(Booking.offers))
             .where(*filters)
-            .order_by(Booking.created_at.desc())
+            .order_by(primary_order, tie_order)
             .offset(offset)
             .limit(page_size)
         )

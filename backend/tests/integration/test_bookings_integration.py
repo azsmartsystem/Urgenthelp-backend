@@ -1,6 +1,7 @@
 """Real PostgreSQL + Redis integration tests for Week 3 Booking Lifecycle & Matching."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import redis.asyncio as aioredis
@@ -415,12 +416,16 @@ async def test_partial_unique_index_blocks_double_booking_and_unblocks_after_com
         await client.post(f"/api/v1/bookings/{b_a['id']}/accept", headers=helper_headers)
     ).status_code == 200
 
-    # Accept Booking B via API while A is active -> 409 HELPER_BUSY
+    # Accept Booking B via API while A overlaps -> 409 HELPER_BUSY
     conflict = await client.post(f"/api/v1/bookings/{b_b['id']}/accept", headers=helper_headers)
     assert conflict.status_code == 409
     assert conflict.json()["code"] == "HELPER_BUSY"
 
-    # Also prove the PostgreSQL partial unique index itself enforces the invariant
+    # Transition Booking A to en_route -> PostgreSQL partial unique index blocks concurrent en_route
+    assert (
+        await client.post(f"/api/v1/bookings/{b_a['id']}/en-route", headers=helper_headers)
+    ).status_code == 200
+
     with pytest.raises(IntegrityError):
         async with db_session.begin_nested():
             db_session.add(
@@ -428,7 +433,7 @@ async def test_partial_unique_index_blocks_double_booking_and_unblocks_after_com
                     customer_id=uuid.UUID(cust_id),
                     helper_id=uuid.UUID(helper_id),
                     category_id=uuid.UUID(plumbing_id),
-                    status="accepted",
+                    status="en_route",
                     urgency="standard",
                     duration_hours=1.0,
                     matching_mode="auto",
@@ -440,9 +445,6 @@ async def test_partial_unique_index_blocks_double_booking_and_unblocks_after_com
             await db_session.flush()
 
     # Complete Booking A -> frees the partial unique index slot
-    assert (
-        await client.post(f"/api/v1/bookings/{b_a['id']}/en-route", headers=helper_headers)
-    ).status_code == 200
     assert (
         await client.post(f"/api/v1/bookings/{b_a['id']}/start", headers=helper_headers)
     ).status_code == 200
@@ -589,3 +591,344 @@ async def test_cancel_booking_from_matched_expires_pending_offers(
     assert cancelled["cancellation_reason"] == "Issue resolved itself"
     assert cancelled["cancelled_by"] == cust_id
     assert all(o["status"] == "expired" for o in cancelled["offers"])
+
+
+@pytest.mark.asyncio
+async def test_scheduled_at_persistence_filtering_and_sorting(
+    integration_client: tuple[AsyncClient, AsyncSession, aioredis.Redis, InMemoryStorageBackend],
+) -> None:
+    """Verify scheduled_at persists, sorts by COALESCE(scheduled_at, created_at), and filters."""
+    client, db_session, redis, _ = integration_client
+    cleaning = await _get_category_by_slug(client, "cleaning")
+    cleaning_id = str(cleaning["id"])
+
+    _, cust_headers = await _register_and_verify_user(
+        client,
+        redis,
+        phone="08036660001",
+        email="cust.sched@example.com",
+        full_name="Seyi Adeyemi",
+        role="customer",
+    )
+
+    now = datetime.now(UTC)
+    later_slot = (now + timedelta(days=5)).replace(microsecond=0)
+    sooner_slot = (now + timedelta(days=2)).replace(microsecond=0)
+
+    # Create ASAP, then far-future, then near-future
+    b_asap = (
+        await client.post(
+            "/api/v1/bookings",
+            headers=cust_headers,
+            json={
+                "category_id": cleaning_id,
+                "address": "1 Admiralty Way, Lekki",
+                "latitude": 6.4474,
+                "longitude": 3.4723,
+            },
+        )
+    ).json()
+    b_later = (
+        await client.post(
+            "/api/v1/bookings",
+            headers=cust_headers,
+            json={
+                "category_id": cleaning_id,
+                "address": "2 Admiralty Way, Lekki",
+                "latitude": 6.4474,
+                "longitude": 3.4723,
+                "scheduled_at": later_slot.isoformat(),
+            },
+        )
+    ).json()
+    b_sooner = (
+        await client.post(
+            "/api/v1/bookings",
+            headers=cust_headers,
+            json={
+                "category_id": cleaning_id,
+                "address": "3 Admiralty Way, Lekki",
+                "latitude": 6.4474,
+                "longitude": 3.4723,
+                "scheduled_at": sooner_slot.isoformat(),
+            },
+        )
+    ).json()
+
+    assert b_asap["scheduled_at"] is None
+    assert datetime.fromisoformat(b_later["scheduled_at"]) == later_slot
+    assert datetime.fromisoformat(b_sooner["scheduled_at"]) == sooner_slot
+
+    # Separate created_at timestamps because PG now() is constant within one test transaction
+    from sqlalchemy import update
+
+    await db_session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(b_asap["id"]))
+        .values(created_at=now - timedelta(seconds=30))
+    )
+    await db_session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(b_later["id"]))
+        .values(created_at=now - timedelta(seconds=20))
+    )
+    await db_session.execute(
+        update(Booking)
+        .where(Booking.id == uuid.UUID(b_sooner["id"]))
+        .values(created_at=now - timedelta(seconds=10))
+    )
+    await db_session.flush()
+
+    # Default sort: COALESCE(scheduled_at, created_at) DESC -> later, sooner, asap
+    default_list = await client.get("/api/v1/bookings", headers=cust_headers)
+    assert default_list.status_code == 200
+    assert [i["id"] for i in default_list.json()["items"]] == [
+        b_later["id"],
+        b_sooner["id"],
+        b_asap["id"],
+    ]
+
+    # Explicit asc sort -> asap, sooner, later
+    asc_list = await client.get(
+        "/api/v1/bookings",
+        headers=cust_headers,
+        params={"sort_by": "scheduled_at", "sort_order": "asc"},
+    )
+    assert asc_list.status_code == 200
+    assert [i["id"] for i in asc_list.json()["items"]] == [
+        b_asap["id"],
+        b_sooner["id"],
+        b_later["id"],
+    ]
+
+    # Explicit created_at desc -> sooner (created last), later, asap
+    created_desc = await client.get(
+        "/api/v1/bookings",
+        headers=cust_headers,
+        params={"sort_by": "created_at", "sort_order": "desc"},
+    )
+    assert created_desc.status_code == 200
+    assert [i["id"] for i in created_desc.json()["items"]] == [
+        b_sooner["id"],
+        b_later["id"],
+        b_asap["id"],
+    ]
+
+    # Range filter including ASAP (COALESCE uses created_at ~ now) up to sooner_slot
+    windowed = await client.get(
+        "/api/v1/bookings",
+        headers=cust_headers,
+        params={
+            "scheduled_from": (now - timedelta(minutes=5)).isoformat(),
+            "scheduled_to": (sooner_slot + timedelta(minutes=1)).isoformat(),
+            "sort_order": "asc",
+        },
+    )
+    assert windowed.status_code == 200
+    assert [i["id"] for i in windowed.json()["items"]] == [b_asap["id"], b_sooner["id"]]
+
+
+@pytest.mark.asyncio
+async def test_helper_accepts_non_overlapping_slots_and_blocks_buffer_conflict(
+    integration_client: tuple[AsyncClient, AsyncSession, aioredis.Redis, InMemoryStorageBackend],
+) -> None:
+    """Helper can accept two non-overlapping scheduled slots, while overlapping slot is busy."""
+    client, _, redis, _ = integration_client
+    plumbing = await _get_category_by_slug(client, "plumbing")
+    plumbing_id = str(plumbing["id"])
+
+    _, cust_headers = await _register_and_verify_user(
+        client,
+        redis,
+        phone="08037770001",
+        email="cust.slots@example.com",
+        full_name="Ngozi Eze",
+        role="customer",
+    )
+    helper_id, helper_headers = await _setup_available_helper(
+        client,
+        redis,
+        phone="08037770002",
+        email="helper.slots@example.com",
+        full_name="Emeka Slots",
+        latitude=6.4480,
+        longitude=3.4730,
+        category_ids=[plumbing_id],
+    )
+    free_id, _ = await _setup_available_helper(
+        client,
+        redis,
+        phone="08037770003",
+        email="helper.slots.free@example.com",
+        full_name="Tunde Free",
+        latitude=6.4550,
+        longitude=3.4750,
+        category_ids=[plumbing_id],
+    )
+
+    slot_morning = (datetime.now(UTC) + timedelta(days=2)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    slot_afternoon = slot_morning.replace(hour=14)
+    slot_overlap = slot_morning.replace(hour=10, minute=15)  # overlaps 09:00-10:00 + 30m buffer
+
+    async def _create_and_select(slot: datetime) -> str:
+        res = await client.post(
+            "/api/v1/bookings",
+            headers=cust_headers,
+            json={
+                "category_id": plumbing_id,
+                "address": "10 Admiralty Way, Lekki",
+                "latitude": 6.4474,
+                "longitude": 3.4723,
+                "duration_hours": 1.0,
+                "matching_mode": "manual",
+                "scheduled_at": slot.isoformat(),
+            },
+        )
+        assert res.status_code == 201
+        bid = str(res.json()["id"])
+        sel = await client.post(
+            f"/api/v1/bookings/{bid}/select-helper",
+            headers=cust_headers,
+            json={"helper_id": helper_id},
+        )
+        assert sel.status_code == 200
+        return bid
+
+    b_morning = await _create_and_select(slot_morning)
+    b_afternoon = await _create_and_select(slot_afternoon)
+
+    # Accept both non-overlapping slots
+    assert (
+        await client.post(f"/api/v1/bookings/{b_morning}/accept", headers=helper_headers)
+    ).status_code == 200
+    assert (
+        await client.post(f"/api/v1/bookings/{b_afternoon}/accept", headers=helper_headers)
+    ).status_code == 200
+
+    # Overlapping booking shows helper as is_busy=True in /match?include_busy=true
+    overlap_create = await client.post(
+        "/api/v1/bookings",
+        headers=cust_headers,
+        json={
+            "category_id": plumbing_id,
+            "address": "11 Admiralty Way, Lekki",
+            "latitude": 6.4474,
+            "longitude": 3.4723,
+            "duration_hours": 1.0,
+            "matching_mode": "manual",
+            "scheduled_at": slot_overlap.isoformat(),
+        },
+    )
+    assert overlap_create.status_code == 201
+    b_overlap = str(overlap_create.json()["id"])
+
+    match_overlap = await client.post(
+        f"/api/v1/bookings/{b_overlap}/match",
+        headers=cust_headers,
+        params={"include_busy": True},
+    )
+    assert match_overlap.status_code == 200
+    cands = match_overlap.json()["candidates"]
+    assert [c["helper_id"] for c in cands] == [free_id, helper_id]
+    assert cands[0]["is_busy"] is False
+    assert cands[1]["is_busy"] is True
+
+    # Selecting busy helper for the overlapping slot returns 409 HELPER_BUSY
+    sel_overlap = await client.post(
+        f"/api/v1/bookings/{b_overlap}/select-helper",
+        headers=cust_headers,
+        json={"helper_id": helper_id},
+    )
+    assert sel_overlap.status_code == 409
+    assert sel_overlap.json()["code"] == "HELPER_BUSY"
+
+
+@pytest.mark.asyncio
+async def test_reschedule_accepted_booking_releases_helper_reprices_and_allows_rematch(
+    integration_client: tuple[AsyncClient, AsyncSession, aioredis.Redis, InMemoryStorageBackend],
+) -> None:
+    """Rescheduling an accepted booking reverts to requested, clears offers, and allows re-pick."""
+    client, _, redis, _ = integration_client
+    cleaning = await _get_category_by_slug(client, "cleaning")
+    cleaning_id = str(cleaning["id"])
+
+    _, cust_headers = await _register_and_verify_user(
+        client,
+        redis,
+        phone="08038880001",
+        email="cust.resched@example.com",
+        full_name="Kemi Balogun",
+        role="customer",
+    )
+    helper_id, helper_headers = await _setup_available_helper(
+        client,
+        redis,
+        phone="08038880002",
+        email="helper.resched@example.com",
+        full_name="Musa Cleaner",
+        latitude=6.4480,
+        longitude=3.4730,
+        category_ids=[cleaning_id],
+    )
+
+    days_ahead = (7 - datetime.now(UTC).weekday()) % 7 or 7
+    next_monday = (datetime.now(UTC) + timedelta(days=days_ahead)).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )  # 11:00 WAT (off-peak)
+    peak_monday = next_monday.replace(hour=7)  # 08:00 WAT (peak)
+
+    created = (
+        await client.post(
+            "/api/v1/bookings",
+            headers=cust_headers,
+            json={
+                "category_id": cleaning_id,
+                "address": "22 Admiralty Way, Lekki",
+                "latitude": 6.4474,
+                "longitude": 3.4723,
+                "matching_mode": "manual",
+                "scheduled_at": next_monday.isoformat(),
+            },
+        )
+    ).json()
+    bid = str(created["id"])
+    off_peak_price = float(created["recommended_price"])
+
+    assert (
+        await client.post(
+            f"/api/v1/bookings/{bid}/select-helper",
+            headers=cust_headers,
+            json={"helper_id": helper_id},
+        )
+    ).status_code == 200
+    assert (
+        await client.post(f"/api/v1/bookings/{bid}/accept", headers=helper_headers)
+    ).status_code == 200
+
+    resched = await client.patch(
+        f"/api/v1/bookings/{bid}/reschedule",
+        headers=cust_headers,
+        json={"scheduled_at": peak_monday.isoformat()},
+    )
+    assert resched.status_code == 200
+    body = resched.json()
+    assert body["status"] == "requested"
+    assert body["helper_id"] is None
+    assert body["agreed_price"] is None
+    assert body["offers"] == []
+    assert datetime.fromisoformat(body["scheduled_at"]) == peak_monday
+    assert float(body["recommended_price"]) > off_peak_price
+
+    # Re-selecting and re-accepting the exact same helper must succeed without IntegrityError
+    assert (
+        await client.post(
+            f"/api/v1/bookings/{bid}/select-helper",
+            headers=cust_headers,
+            json={"helper_id": helper_id},
+        )
+    ).status_code == 200
+    reaccept = await client.post(f"/api/v1/bookings/{bid}/accept", headers=helper_headers)
+    assert reaccept.status_code == 200
+    assert reaccept.json()["helper_id"] == helper_id

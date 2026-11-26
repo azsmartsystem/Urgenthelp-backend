@@ -1,13 +1,20 @@
 """Helpers module router — helper profile management and nearby discovery."""
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
+from app.core.config import Settings, get_settings
 from app.core.exceptions import InvalidTokenError
 from app.core.security import TokenPayload, get_current_user
 from app.db.session import get_db
-from app.modules.bookings.schemas import BookingStatus, PaginatedBookingsResponse
-from app.modules.bookings.service import BookingService
+from app.modules.bookings.schemas import (
+    BookingSortBy,
+    BookingStatus,
+    PaginatedBookingsResponse,
+    SortOrder,
+)
+from app.modules.bookings.service import BookingService, ensure_utc
 from app.modules.helpers.schemas import (
     HelperProfileResponse,
     NearbyHelperResponse,
@@ -21,12 +28,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter()
 
 
-def _get_service(db: Annotated[AsyncSession, Depends(get_db)]) -> HelperService:
-    return HelperService(db=db)
+def _get_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> HelperService:
+    return HelperService(
+        db=db,
+        conflict_buffer_minutes=settings.BOOKING_CONFLICT_BUFFER_MINUTES,
+    )
 
 
-def _get_booking_service(db: Annotated[AsyncSession, Depends(get_db)]) -> BookingService:
-    return BookingService(db=db, push_provider=get_push_provider())
+def _get_booking_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> BookingService:
+    return BookingService(
+        db=db,
+        push_provider=get_push_provider(),
+        conflict_buffer_minutes=settings.BOOKING_CONFLICT_BUFFER_MINUTES,
+    )
 
 
 def _parse_user_id(current_user: TokenPayload) -> uuid.UUID:
@@ -63,13 +83,30 @@ async def list_my_helper_bookings(
     current_user: Annotated[TokenPayload, Depends(get_current_user)],
     service: Annotated[BookingService, Depends(_get_booking_service)],
     status: Annotated[BookingStatus | None, Query()] = None,
+    scheduled_from: Annotated[datetime | None, Query()] = None,
+    scheduled_to: Annotated[datetime | None, Query()] = None,
+    sort_by: Annotated[BookingSortBy, Query()] = "scheduled_at",
+    sort_order: Annotated[SortOrder, Query()] = "desc",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> PaginatedBookingsResponse:
     """List the authenticated helper's job queue (assigned jobs + pending offers)."""
+    if (
+        scheduled_from is not None
+        and scheduled_to is not None
+        and ensure_utc(scheduled_from) > ensure_utc(scheduled_to)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="scheduled_from must be less than or equal to scheduled_to.",
+        )
     return await service.list_helper_bookings(
         helper_id=_parse_user_id(current_user),
         status=status,
+        scheduled_from=scheduled_from,
+        scheduled_to=scheduled_to,
+        sort_by=sort_by,
+        sort_order=sort_order,
         page=page,
         page_size=page_size,
     )

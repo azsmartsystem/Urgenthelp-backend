@@ -1,7 +1,7 @@
 """Pydantic schemas for the bookings module."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, Self
 
 from app.schemas.base import AppBaseModel
@@ -21,6 +21,21 @@ BookingUrgency = Literal["standard", "urgent"]
 MatchingMode = Literal["auto", "manual"]
 OfferStatus = Literal["pending", "accepted", "declined", "superseded", "expired"]
 PriceConfidence = Literal["high", "medium", "low"]
+BookingSortBy = Literal["scheduled_at", "created_at"]
+SortOrder = Literal["asc", "desc"]
+
+SCHEDULED_AT_PAST_GRACE_MINUTES = 5
+
+
+def _validate_future_scheduled_at(v: datetime) -> datetime:
+    """Require timezone-aware scheduled_at, normalize to UTC, and reject past timestamps."""
+    if v.tzinfo is None or v.utcoffset() is None:
+        raise ValueError("scheduled_at must be timezone-aware (ISO-8601 with offset or 'Z').")
+    normalized = v.astimezone(UTC)
+    earliest_allowed = datetime.now(UTC) - timedelta(minutes=SCHEDULED_AT_PAST_GRACE_MINUTES)
+    if normalized < earliest_allowed:
+        raise ValueError("scheduled_at cannot be in the past.")
+    return normalized
 
 
 class CreateBookingRequest(AppBaseModel):
@@ -39,8 +54,16 @@ class CreateBookingRequest(AppBaseModel):
     longitude: float = Field(ge=-180.0, le=180.0)
     urgency: BookingUrgency = "standard"
     duration_hours: float = Field(default=1.0, gt=0.0, le=24.0)
+    scheduled_at: Annotated[datetime | None, Strict(False)] = None
     matching_mode: MatchingMode = "auto"
     notes: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def validate_scheduled_at(cls, v: datetime | None) -> datetime | None:
+        if v is None:
+            return None
+        return _validate_future_scheduled_at(v)
 
     @field_validator("address")
     @classmethod
@@ -76,6 +99,24 @@ class SelectHelperRequest(AppBaseModel):
     )
 
     helper_id: Annotated[uuid.UUID, Strict(False)]
+
+
+class RescheduleBookingRequest(AppBaseModel):
+    """Payload to reschedule a booking to a concrete future appointment time."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        strict=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    scheduled_at: Annotated[datetime, Strict(False)]
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def validate_scheduled_at(cls, v: datetime) -> datetime:
+        return _validate_future_scheduled_at(v)
 
 
 class CancelBookingRequest(AppBaseModel):
@@ -132,6 +173,7 @@ class BookingResponse(AppBaseModel):
     status: BookingStatus
     urgency: BookingUrgency
     duration_hours: float
+    scheduled_at: datetime | None = None
     matching_mode: MatchingMode
     address: str
     latitude: float
